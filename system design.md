@@ -246,6 +246,94 @@ if (savedUuid != null) {
 
 ## 4 — INFORMATION ARCHITECTURE
 
+### 4.1 Four-Level Progressive Disclosure Model
+
+The app uses gaze-driven progressive disclosure optimized for walking/on-the-go use. Each level reveals more information and interaction surface. Gaze escalates, gaze-away de-escalates. The user never has to commit to a full interface to handle email.
+
+```
+Level 0: AMBIENT HUD                Level 1: NOTIFICATION CARDS
+(Background plane, Z=30dp)          (Foreground plane, Z=15dp)
+┌──────────────────────┐            ┌────────────────────────────┐
+│                   🎤 │            │ ✉ 4 new                    │
+│ ┌──────────────────┐ │  ──gaze──▶ │ pinch to open · swipe to act│
+│ │ 🅒 Chen · Paper  │ │  500ms     │                            │
+│ │ revision needs.. │ │  dwell     │ ┃ 🅒 Chen · Paper revision │
+│ │            ✉ 4   │ │            │ ┃   needs by Friday...     │
+│ └──────────────────┘ │            │                            │
+│ ▓▓▓▓░░░ 60%         │            │ ┃ 🅐 Alex · Partnership    │
+│ ✓ Archived: Team     │  ◀──gaze──│ ┃   proposal ready for...  │
+└──────────────────────┘   away     │                            │
+  ~280dp, upper-right      2s      │ ┃ 🅜 Maria · UIST paper   │
+  notification banner      collapse│ ┃   question about method..│
+  (iPhone-style)                    │                            │
+                                    │ → archive ← snooze         │
+                                    │ pinch open  look away ✕    │
+                                    └──────────┬─────────────────┘
+                                               │ pinch / "open inbox"
+                                               ▼
+                                    ┌─────────────────────┐
+                                    │   TRIAGE PANEL      │  ← Level 2: Content plane, Z=0
+                                    │   (~420dp wide)     │     Priority-sorted email stream
+                                    │                     │
+                                    │  • Swipeable cards  │     Gesture vocabulary (secondary hand):
+                                    │  • TTS summary hdr  │     • Swipe right → archive
+                                    │  • Gesture hints    │     • Swipe left → snooze
+                                    │                     │     • Pinch → select + TTS reads summary
+                                    │  Voice in triage:   │     • Pinch+hold → expand to Focus
+                                    │  "Reply yes"        │     • Swipe down → collapse to HUD
+                                    │  "Skip" / "Star"    │     • Swipe up → star
+                                    └────────┬────────────┘     • Tilt → scroll list
+                                             │ pinch+hold / "show details"
+                                             ▼
+                                    ┌─────────────────────┐
+                                    │   FOCUS MODE        │  ← Level 3: Content plane, Z=0
+                                    │   (three-panel)     │     Full desk — at-desk deep work
+                                    │                     │
+                                    │  • Inbox panel      │     Has collapse button → returns to Triage
+                                    │  • Reader/Compose   │     Swipe down → collapse to Triage
+                                    │  • Context sidebar  │     "minimize all" → collapse to HUD
+                                    └─────────────────────┘
+```
+
+**Key design principle: "Walking in a city" test.** Every feature must be usable while the user is moving through a physical environment. The Ambient HUD and Notification Cards levels are specifically designed for peripheral use — they sit in the 20-30° off-center zone, use high-contrast priority colors, and auto-collapse when attention moves away. The user should never need to stop walking to triage their email.
+
+**Three-plane depth system:**
+- **Background (Z=30dp):** Ambient HUD — always visible, minimal, peripheral
+- **Foreground (Z=15dp):** Notification Cards — gaze-expanded, closer for easy reading while walking
+- **Content (Z=0dp):** Triage and Focus — primary interaction planes for stationary use
+
+### 4.2 Gesture Vocabulary by Level
+
+| Gesture      | Ambient HUD              | Notification Cards         | Triage Panel             | Focus Mode         |
+| ------------ | ------------------------ | -------------------------- | ------------------------ | ------------------ |
+| Gaze dwell   | Expand to Notif Cards    | Highlight card             | --                       | --                 |
+| Gaze away    | --                       | Collapse to HUD (2s)      | --                       | --                 |
+| Pinch        | Expand to Notif Cards    | Open highlighted in Triage | Select email (TTS reads) | Standard select    |
+| Pinch + hold | --                       | Expand to Triage (all)     | Expand to Focus          | --                 |
+| Swipe right  | --                       | Archive from card          | Archive email            | --                 |
+| Swipe left   | --                       | Snooze from card           | Snooze email             | --                 |
+| Swipe down   | --                       | Collapse to HUD            | Collapse to HUD          | Collapse to Triage |
+| Swipe up     | --                       | Star email                 | Star email               | --                 |
+| Tilt down/up | --                       | --                         | Scroll list              | Scroll content     |
+
+### 4.3 Voice-First Compose (No Keyboard Required)
+
+In Triage/HUD mode, compose is entirely voice — no panel opens:
+
+```
+User → "Reply saying I'll revise by Friday"
+  → GeminiLive generates draft
+  → TTS reads: "Draft: Thank you for the feedback. I'll revise the methodology section..."
+  → User: "Make it more formal"
+  → TTS reads updated draft
+  → User: "Send it" (or pinch to confirm)
+  → Toast: "Sent to Dr. Chen"
+```
+
+In Focus Mode, the ComposeScreen has a voice/keyboard toggle — text fields remain as fallback.
+
+### 4.4 Full Information Architecture
+
 ```
 XR Email App
 ├── 🏠 Home Space (Ambient Mode)
@@ -253,11 +341,47 @@ XR Email App
 │   ├── Inbox Badge via standard notification channels
 │   └── Voice: "Hey Gemini, any important emails?"
 │
-├── 📬 Inbox View (Full Space)
+├── 👁️ Ambient HUD (Level 0 — Peripheral Vision, Z=30dp)
+│   ├── SpatialPanel (280dp) pinned upper-right (~25° off-center)
+│   ├── NotificationBanner: iPhone-style banner cycling through unread emails
+│   │   ├── Avatar + sender + AI summary preview + unread count badge
+│   │   ├── Cycles through unread emails every 4 seconds
+│   │   ├── Pulses gently when HIGH priority emails present
+│   │   └── Gaze dwell (500ms) or pinch → expands to Notification Cards
+│   ├── TTS progress bar (attention-aware pause via face blendshapes)
+│   ├── Voice status indicator (mic active / Gemini processing)
+│   ├── Toast confirmations ("Archived", "Sent to Dr. Chen")
+│   └── VoiceComposeOverlay (when voice-composing from HUD)
+│
+├── 🔔 Notification Cards (Level 1 — Gaze-Expanded, Z=15dp)
+│   ├── SpatialPanel (340×520dp) at foreground depth, slightly right+up
+│   ├── Fanned-out compact NotificationCards (priority-sorted)
+│   │   ├── Priority color strip + avatar + sender + AI summary
+│   │   ├── Swipe right → archive directly from card
+│   │   ├── Swipe left → snooze directly from card
+│   │   └── Pinch → open that email in Triage (pre-selected)
+│   ├── Overflow indicator ("+N more — pinch to see all")
+│   ├── Action hints strip ("→ archive ← snooze pinch open look away ✕")
+│   ├── MinimalStatusBar (TTS + voice status in corner)
+│   └── Auto-collapses to HUD when gaze moves away for 2 seconds
+│
+├── 📋 Triage Panel (Level 2 — Compact Gesture-Driven, Z=0)
+│   ├── Single narrow SpatialPanel (~420dp wide)
+│   ├── Priority-sorted email cards with SwipeToDismiss
+│   │   ├── Swipe right → archive (green bg + archive icon)
+│   │   ├── Swipe left → snooze (coral bg + snooze icon)
+│   │   └── Pinch → select + TTS reads AI summary
+│   ├── TTS summary header (currently-playing email)
+│   ├── Gesture hint strip (fades after 5s)
+│   ├── NotificationBanner as orbiter (stays visible during triage)
+│   └── VoiceComposeOverlay (when voice-composing from triage)
+│
+├── 📬 Focus Mode (Tier 3 — Full Three-Panel Layout)
 │   ├── Left Panel: Smart Inbox
 │   │   ├── Priority Stream (AI-sorted, top = most important)
 │   │   ├── Categories: People / Updates / Promotions / Newsletters
 │   │   ├── TiltGesture scroll (device tilt to scroll list)
+│   │   ├── Collapse button orbiter → returns to Triage
 │   │   └── Voice: "Show me emails from Dr. Chen"
 │   ├── Center Panel: Email Reader
 │   │   ├── Rendered email body
@@ -270,14 +394,15 @@ XR Email App
 │   │   ├── Attachments gallery
 │   │   └── AI-extracted action items
 │   └── Bottom Orbiter: Quick Actions
-│       ├── Reply (opens compose)
+│       ├── Reply (opens compose with voice/keyboard toggle)
 │       ├── Archive / Delete
 │       ├── Snooze (voice: "remind me tomorrow at 9")
 │       └── Forward
 │
-├── ✍️ Compose / Reply (Spatial Panel)
+├── ✍️ Compose / Reply (Spatial Panel — Focus Mode only)
 │   ├── Draft Panel (center, elevated)
 │   │   ├── To / CC / Subject fields
+│   │   ├── Voice/Keyboard toggle (voice mode hides text fields, shows live transcription)
 │   │   ├── Body editor (Gemini Live API voice dictation primary)
 │   │   ├── AI draft indicator ("AI wrote this — review before sending")
 │   │   └── Formatting toolbar (orbiter)
@@ -294,11 +419,14 @@ XR Email App
 │   ├── Results as scrollable cards in spatial layout
 │   └── Gaze (system hover) + pinch to select
 │
-├── 🔔 Notification System (Dual-Path)
-│   ├── Full Space: Peripheral pills (bottom-right of FoV, ~25° off-center)
-│   │   ├── Grouped by: sender, thread, or category
-│   │   ├── System gaze hover to expand → shows sender + subject + AI 1-line summary
-│   │   ├── Pinch to open → jumps to full email
+├── 🔔 Notification System (Progressive Disclosure + Dual-Path)
+│   ├── Full Space: Gaze-driven progressive disclosure
+│   │   ├── Level 0: NotificationDotStack (stacked colored dots, peripheral)
+│   │   ├── Level 1: NotificationCardStack (gaze-expanded compact cards)
+│   │   │   ├── Swipeable for archive/snooze without entering Triage
+│   │   │   ├── Priority-sorted (HIGH first, then MEDIUM, LOW, IGNORE)
+│   │   │   └── Auto-collapse on gaze-away (2s timeout)
+│   │   ├── Level 2+: Triage/Focus panels for full interaction
 │   │   └── Voice: "Ignore" / "Read it" / "Reply with yes"
 │   ├── Home Space: Standard NotificationCompat path (entirely separate)
 │   │   ├── NotificationCompat.Builder with email content
@@ -456,7 +584,115 @@ object XREmailTypography {
 
 ## 6 — KEY SCREEN DESIGNS
 
-### 6.1 — Inbox View (Three-Panel Spatial Layout)
+### 6.1 — Ambient HUD (Level 0 — Peripheral Vision)
+
+```
+                                    ┌──────────────────────────┐
+                                    │                       🎤 │  ← VoiceStatus
+                                    │ ┌──────────────────────┐ │
+                                    │ │ 🅒 Chen · Paper      │ │  ← NotificationBanner
+                                    │ │ revision needs by... │ │     (iPhone-style, cycles
+                                    │ │                ✉ 4   │ │      through unread emails)
+                                    │ └──────────────────────┘ │
+                                    │ ▓▓▓▓▓▓░░░░░ 60%         │  ← TTS progress bar
+                                    │ ✓ Archived: Team Slk     │  ← Toast overlay (auto-dismiss)
+                                    └──────────────────────────┘
+                                      ~280dp wide, Z=30dp
+                                      upper-right peripheral zone
+```
+
+**Interactions:**
+- **Gaze dwell (500ms)** on banner → expands to Notification Cards
+- **Pinch on banner** → expands to Notification Cards (manual fallback)
+- **Voice: "What's urgent?"** → Gemini reads top priority summary via TTS
+- **Voice: "Read next"** → TTS reads next unread email summary
+- **Auto-pauses TTS** when eyes close (face blendshape tracker)
+- **Banner pulses gently** when HIGH priority unread emails exist
+- **Banner cycles** through unread emails every 4 seconds (sender + AI summary)
+
+### 6.2 — Notification Cards (Level 1 — Gaze-Expanded)
+
+```
+                          ┌────────────────────────────────┐
+                          │ ✉ 4 new    pinch to open ·     │
+                          │            swipe to act         │
+                          │                                │
+                          │ ┃ 🅒 Chen        10:23 AM  🔴 │  ← Priority strip + avatar
+                          │ ┃   Paper revision needs...    │     + AI summary + pulse
+                          │                                │
+                          │ ┃ 🅐 Alex        9:45 AM      │
+                          │ ┃   Partnership proposal...    │
+                          │                                │
+                          │ ┃ 🅜 Maria       Yesterday    │
+                          │ ┃   UIST paper question...     │
+                          │                                │
+                          │ ┃ 🅝 Newsletter   Yesterday   │
+                          │ ┃   Weekly digest available... │
+                          │                                │
+                          │ → archive  ← snooze            │
+                          │ pinch open  look away ✕        │  ← Action hints
+                          └────────────────────────────────┘
+                            ~320dp wide, Z=15dp (foreground)
+                            Slightly right+up of center
+```
+
+**Interactions:**
+- **Swipe right on card** → archive directly (no need to enter Triage)
+- **Swipe left on card** → snooze directly
+- **Pinch on card** → open that email in Triage (pre-selected)
+- **Pinch + hold** → expand to full Triage panel
+- **Gaze away for 2 seconds** → auto-collapse back to dot stack
+- **Swipe down** → manual collapse back to HUD
+- **Voice: "Archive this"** → archives highlighted card
+- **Voice: "Read this"** → TTS reads highlighted card's AI summary
+
+**Design rationale for walking use:**
+- Cards are at foreground depth (Z=15dp) — closer to user for easy reading
+- High-contrast priority color strips visible in peripheral vision
+- Large swipe targets (full card width) for imprecise gesture input while moving
+- Auto-collapse prevents the interface from blocking the user's path view
+
+### 6.3 — Triage Panel (Level 2 — Gesture-Driven)
+
+```
+┌────────────────────────┐
+│ ▶ Chen: Requests paper │  ← TTS summary header (if playing)
+│   revision by Friday   │
+├────────────────────────┤
+│ ← snooze  ┌──────────┐│  archive →
+│            │ ★ Dr.C   ││
+│            │  Paper   ││  ← SwipeToDismiss email cards
+│            │  revision││     (priority-sorted)
+│            └──────────┘│
+│            ┌──────────┐│
+│            │  Alex R  ││
+│            │  Partner ││
+│            │  proposal││
+│            └──────────┘│
+│            ┌──────────┐│
+│            │  Maria S ││
+│            │  UIST    ││
+│            │  paper Q ││
+│            └──────────┘│
+│                        │
+│ → archive  ← snooze   │
+│ ↑ star  pinch read     │  ← Gesture hint strip (fades after 5s)
+└────────────────────────┘
+  ~420dp wide, single panel
+```
+
+**Interactions:**
+- **Swipe right** → archive (green background + archive icon)
+- **Swipe left** → snooze (coral background + snooze icon)
+- **Pinch on card** → select and hear full summary via TTS
+- **Pinch + hold** → expand to Focus Mode (three-panel)
+- **Swipe down on panel** → collapse back to Ambient HUD
+- **Tilt device** → scroll the list
+- **Voice: "Reply yes"** → AI drafts + reads back, pinch to confirm send
+- **Voice: "Skip"** → next email
+- **Voice: "Star this"** → toggle star
+
+### 6.3 — Focus Mode / Inbox View (Tier 3 — Three-Panel Spatial Layout)
 
 ```
 ┌──────────────┐  ┌────────────────────────┐  ┌──────────────┐
@@ -494,7 +730,7 @@ object XREmailTypography {
 - **Swipe left on inbox item (secondary hand)** → archive
 - **Swipe right (secondary hand)** → snooze (voice prompt: "When?")
 
-### 6.2 — Compose / Reply (Elevated Draft Panel)
+### 6.4 — Compose / Reply (Elevated Draft Panel)
 
 ```
                     ┌────────────────────────┐
@@ -537,7 +773,7 @@ User says "Send it" (via Gemini Live API) →
       → User: "Send" / "Wait, change the second paragraph..."
 ```
 
-### 6.3 — Notification System (Dual-Path)
+### 6.5 — Notification System (Dual-Path)
 
 **Full Space notifications** (SpatialPanel + Orbiter — only works in Full Space):
 ```
@@ -600,7 +836,7 @@ class HomeSpaceNotifier(private val context: Context) {
 - Collapses back to dot or fades out over 1000ms
 - Total lifecycle: ~7 seconds passive, indefinite if user gazes
 
-### 6.4 — Thread Context Overlay (Long Conversations)
+### 6.6 — Thread Context Overlay (Long Conversations)
 
 For email chains with 5+ messages, show a spatial timeline:
 
@@ -623,7 +859,42 @@ For email chains with 5+ messages, show a spatial timeline:
 └───────────────────────────────────────────────────────────────────┘
 ```
 
-### 6.5 — Peripheral Vision Utility
+### 6.7 — Voice-First Compose Flow (No Keyboard)
+
+The voice compose flow works in any tier — from HUD, Triage, or Focus Mode:
+
+```
+User says "Reply saying I'll revise by Friday"
+    │
+    ▼
+┌─────────────────────────────────┐
+│ VoiceComposeOverlay             │
+│                                 │
+│ To: Dr. Wei Chen                │
+│ Re: Paper revision              │
+│                                 │
+│ 🎤 Listening...                 │  ← ComposeState.LISTENING
+│ describe your reply             │
+└─────────────────────────────────┘
+    │ Gemini generates draft
+    ▼
+┌─────────────────────────────────┐
+│ To: Dr. Wei Chen                │
+│ Re: Paper revision              │
+│                                 │
+│ "Thank you for the feedback,    │
+│  Dr. Chen. I'll revise the      │  ← Draft text (AI-generated)
+│  methodology section and submit │
+│  by Friday."                    │
+│                                 │
+│ Pinch to send · Say "edit"      │  ← ComposeState.AWAITING_CONFIRM
+└─────────────────────────────────┘
+    │ User: "Send it" or pinch
+    ▼
+Toast: "Sent to Dr. Wei Chen"
+```
+
+### 6.8 — Peripheral Vision Utility
 
 Design elements usable **without shifting focus** from the real world:
 
@@ -806,15 +1077,23 @@ com.xremail.app/
 │   │   ├── ContactCard.kt         // Rich contact info
 │   │   └── ActionItemsList.kt     // AI-extracted to-dos
 │   ├── notifications/
-│   │   ├── NotificationPill.kt    // Full Space peripheral notification component
-│   │   ├── NotificationStack.kt   // Grouped notification list (Full Space)
+│   │   ├── NotificationPill.kt    // Full Space peripheral notification pill (Focus Mode orbiter)
+│   │   ├── NotificationStack.kt   // NotificationBanner (iPhone-style) + NotificationCardStack (gaze-expanded cards)
+│   │   ├── NotificationCard.kt    // Compact swipeable notification card (sender + summary + priority)
 │   │   ├── NotificationAnimations.kt // Transition animations (Full Space)
 │   │   └── HomeSpaceNotifier.kt   // Standard NotificationCompat fallback
 │   ├── search/
 │   │   ├── SearchOverlay.kt       // Voice-activated search
 │   │   └── SearchResults.kt       // Spatial result cards
+│   ├── peripheral/
+│   │   ├── AmbientHud.kt          // Tier 1: Always-visible peripheral overlay
+│   │   ├── SummaryTicker.kt       // Auto-scrolling AI one-line summaries
+│   │   ├── TriagePanel.kt         // Tier 2: Single-panel gesture-driven triage
+│   │   ├── GestureHintStrip.kt    // Gesture hints bar (fades after 5s)
+│   │   └── VoiceComposeOverlay.kt // Keyboard-free voice compose UI
 │   ├── spatial/
-│   │   ├── SpatialEmailLayout.kt  // Three-panel curved layout (headset)
+│   │   ├── SpatialEmailLayout.kt  // Three-panel curved layout (headset) + collapse callback
+│   │   ├── InteractionTierRouter.kt // Depth-aware router: HUD → NotifCards → Triage → Focus
 │   │   ├── GlimmerEmailApp.kt     // Glimmer variant (glasses only)
 │   │   ├── DisplayModeRouter.kt   // DisplayBlendMode check → headset vs glasses
 │   │   ├── EmailOrbiters.kt       // Quick action orbiter bar
@@ -839,11 +1118,14 @@ com.xremail.app/
 ├── voice/
 │   ├── GeminiLiveManager.kt       // Gemini Live API session management
 │   ├── EmailCommandTool.kt        // Function calling tool definitions
-│   └── TTSManager.kt              // Text-to-speech (attention-aware via blendshapes)
+│   ├── TTSManager.kt              // Text-to-speech (attention-aware via blendshapes)
+│   └── VoiceComposeManager.kt     // Orchestrates voice-first compose flow
 └── tracking/
-    ├── FaceAttentionTracker.kt    // ARCore face blendshapes for attention detection
-    ├── SecondaryHandGestures.kt   // Custom gestures on non-primary hand only
+    ├── FaceAttentionTracker.kt    // ARCore face blendshapes for attention + gaze zone detection
+    ├── SecondaryHandGestures.kt   // Custom gestures on non-primary hand only (+ PINCH_HOLD_EXPAND, SWIPE_UP_STAR)
+    ├── GestureToActionMapper.kt   // Context-aware gesture→action routing per 4-level model
     ├── TiltScrollController.kt    // TiltGesture API for list scrolling
+    ├── XrSessionManager.kt        // Orchestrates XR session config + starts all tracking subsystems
     └── MultiModalInputRouter.kt   // Fuses gaze(system) + hand + voice + tilt input
 ```
 
@@ -1017,15 +1299,30 @@ fun restoreAnchor(session: Session, threadId: String): Anchor? {
 
 ## 9 — PROTOTYPE PHASES
 
-### Phase 1: Core Spatial Layout + Mock Data (Week 1-2) ✅ IN PROGRESS
+### Phase 1: Core Spatial Layout + Mock Data (Week 1-2) ✅ COMPLETE
 - [x] Three-panel SpatialCurvedRow with curved layout
 - [x] InboxScreen with static email list (mock data)
 - [x] EmailReaderScreen with body + AI summary card
 - [x] ContextSidebar with contact card + attachment list
 - [x] QuickAction orbiter bar
 - [x] XR Email theme (colors, typography, shapes)
+- [x] DisplayBlendMode check for headset vs glasses routing
+- [x] Four-level progressive disclosure model (HUD → NotifCards → Triage → Focus)
+- [x] InteractionTierRouter with depth-aware spatial positioning (three-plane system)
+- [x] AmbientHud: NotificationBanner (iPhone-style), TtsProgressBar, VoiceStatus, Toast
+- [x] NotificationCardStack: gaze-expanded compact cards with swipe archive/snooze
+- [x] NotificationCard: priority strip + avatar + sender + AI summary + swipe actions
+- [x] NotificationBanner: cycling sender preview + count badge, gaze-expandable
+- [x] TriagePanel: SwipeToDismiss cards, gesture hints, TTS summary header
+- [x] VoiceComposeOverlay for keyboard-free compose
+- [x] GestureToActionMapper (context-aware gesture routing per 4-level model)
+- [x] FaceAttentionTracker with gaze zone detection (eye look blendshapes + dwell timing)
+- [x] VoiceComposeManager (draft→readback→confirm flow)
+- [x] ComposeScreen voice/keyboard toggle
+- [x] NotificationPill pulse animation for HIGH priority (Focus Mode orbiter)
+- [x] SpatialEmailLayout collapse callback for Focus→Triage
+- [x] XrSessionManager for XR session orchestration
 - [ ] Test on Android XR Emulator
-- [ ] DisplayBlendMode check for headset vs glasses routing
 
 ### Phase 2: Voice + Input (Week 3-4)
 - [ ] Gemini Live API integration (replaces SpeechRecognizer)
@@ -1115,6 +1412,15 @@ When generating code from this prompt:
 13. **Animations** should be smooth and slow (500ms-2000ms). No snapping. Fade in/out for notifications. Use `animateDpAsState` and `AnimatedVisibility`.
 14. **Spatial panels max size:** 2560dp × 1800dp in Full Space. Typical panels: 400-900dp wide, 800-900dp tall.
 15. **Don't forget `enableOnBackInvokedCallback="true"`** in the manifest for proper back navigation on spatial panels.
+16. **Four-level progressive disclosure model.** Default to `AMBIENT_HUD`. Gaze dwell (500ms) on notification zone auto-expands to `NOTIFICATION_CARDS`. Gaze away (2s) auto-collapses. Pinch escalates to `TRIAGE`. Pinch+hold escalates to `FOCUS`. Use `InteractionTierRouter` for all tier switching.
+17. **Gesture actions are context-aware.** Use `GestureToActionMapper` to route the same physical gesture to different ViewModel actions depending on the current `InteractionTier`. The mapper now handles all four levels.
+18. **Voice compose is the primary compose method** in HUD and Triage tiers. The `VoiceComposeOverlay` handles the full draft→readback→confirm flow without opening a text panel. Text fields are only a Focus Mode fallback.
+19. **Priority sorting in Triage and Notification Cards.** Both show emails sorted by: unread first, then by priority (HIGH→MEDIUM→LOW→IGNORE), then by urgency score descending.
+20. **Toast confirmations** for all destructive actions (archive, snooze, send). Auto-dismiss after 3 seconds. Show in the AmbientHud overlay regardless of current tier.
+21. **Gaze zone detection** uses ARCore eye look direction blendshapes (`EYES_LOOK_RIGHT_LEFT/RIGHT`, `EYES_LOOK_UP_LEFT/RIGHT`) to approximate whether the user is looking at the notification zone. Dwell timing: 500ms to expand, 2000ms to collapse.
+22. **Three-plane depth system.** Background (Z=30dp) for ambient HUD, Foreground (Z=15dp) for notification cards, Content (Z=0dp) for Triage and Focus. This creates a natural depth hierarchy that matches the progressive disclosure model.
+23. **Walking-first design.** Every UI element must pass the "walking in a city" test: visible in peripheral vision, operable with imprecise gestures, auto-collapses when not needed. Notification Cards use high-contrast priority strips and large swipe targets.
+24. **Notification Cards enable inline triage.** Users can archive/snooze directly from notification cards without entering the full Triage panel. This reduces the interaction cost for common actions while walking.
 
 ---
 
@@ -1134,3 +1440,10 @@ Tracking corrections to the original spec for reference:
 | 8 | Classification | Per-email Gemini calls | Batch ~20 emails per call (95% cost reduction) |
 | 9 | List scrolling | Hand/touchpad only | TiltGesture API (alpha10, no permission) |
 | 10 | Panel persistence | Panels reset on relaunch | Persistent spatial anchors via Room + Anchor.UUID |
+| 11 | Interaction model | Three-panel only, headset-centric | Three-tier model: Ambient HUD → Triage → Focus, fully usable in peripheral view |
+| 12 | Keyboard dependency | ComposeScreen requires keyboard | Voice-first compose via VoiceComposeManager; keyboard is Focus Mode fallback only |
+| 13 | Gesture routing | Same gesture = same action everywhere | Context-aware GestureToActionMapper routes gestures per InteractionTier |
+| 14 | Notification display | Single unread count badge | iPhone-style notification banner → gaze-expanded notification cards with inline archive/snooze |
+| 15 | Tier model | Three tiers (HUD → Triage → Focus) | Four levels with gaze-driven progressive disclosure (HUD → NotifCards → Triage → Focus) |
+| 16 | Spatial depth | All panels at same Z-depth | Three-plane depth system: Background (Z=30dp), Foreground (Z=15dp), Content (Z=0dp) |
+| 17 | Walking usability | Headset-centric, requires stationary use | Walking-first design: peripheral visibility, auto-collapse, imprecise gesture targets |

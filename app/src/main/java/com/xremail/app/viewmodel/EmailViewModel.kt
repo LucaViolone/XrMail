@@ -14,6 +14,21 @@ import kotlinx.coroutines.launch
 
 enum class AppMode { READING, COMPOSING }
 
+enum class InteractionTier { AMBIENT_HUD, NOTIFICATION_CARDS, TRIAGE, FOCUS }
+
+data class VoiceDraft(
+    val recipientName: String = "",
+    val subject: String = "",
+    val draftText: String = "",
+    val isGenerating: Boolean = false,
+    val confidence: Float = 0f,
+)
+
+data class ToastMessage(
+    val text: String,
+    val id: Long = System.currentTimeMillis(),
+)
+
 data class EmailUiState(
     val emails: List<Email> = emptyList(),
     val selectedEmail: Email? = null,
@@ -24,10 +39,14 @@ data class EmailUiState(
     val unreadCount: Int = 0,
     val isLoading: Boolean = false,
     val errorMessage: String? = null,
-    // AI state
     val replySuggestions: List<String> = emptyList(),
     val isLoadingSuggestions: Boolean = false,
-    val voiceDraft: EmailDraft? = null,
+    val tier: InteractionTier = InteractionTier.AMBIENT_HUD,
+    val voiceDraft: VoiceDraft? = null,
+    val toastMessage: ToastMessage? = null,
+    val isVoiceComposing: Boolean = false,
+    val highlightedNotificationId: String? = null,
+    val isGazingAtNotifications: Boolean = false,
 )
 
 class EmailViewModel(
@@ -81,12 +100,83 @@ class EmailViewModel(
     }
 
     // ---------------------------------------------------------------------------
+    // Tier navigation
+    // ---------------------------------------------------------------------------
+
+    fun expandToNotificationCards() {
+        _uiState.update {
+            it.copy(
+                tier = InteractionTier.NOTIFICATION_CARDS,
+                isGazingAtNotifications = true,
+            )
+        }
+    }
+
+    fun collapseFromNotificationCards() {
+        _uiState.update {
+            it.copy(
+                tier = InteractionTier.AMBIENT_HUD,
+                highlightedNotificationId = null,
+                isGazingAtNotifications = false,
+            )
+        }
+    }
+
+    fun highlightNotification(emailId: String?) {
+        _uiState.update { it.copy(highlightedNotificationId = emailId) }
+    }
+
+    fun openFromNotification(email: Email) {
+        selectEmail(email)
+        _uiState.update {
+            it.copy(
+                tier = InteractionTier.TRIAGE,
+                highlightedNotificationId = null,
+                isGazingAtNotifications = false,
+            )
+        }
+    }
+
+    fun expandToTriage() {
+        _uiState.update {
+            it.copy(
+                tier = InteractionTier.TRIAGE,
+                highlightedNotificationId = null,
+                isGazingAtNotifications = false,
+            )
+        }
+    }
+
+    fun collapseToHud() {
+        _uiState.update {
+            it.copy(
+                tier = InteractionTier.AMBIENT_HUD,
+                isVoiceComposing = false,
+                voiceDraft = null,
+                highlightedNotificationId = null,
+                isGazingAtNotifications = false,
+            )
+        }
+    }
+
+    fun expandToFocus() {
+        _uiState.update { it.copy(tier = InteractionTier.FOCUS) }
+    }
+
+    fun collapseToTriage() {
+        _uiState.update { it.copy(tier = InteractionTier.TRIAGE) }
+    }
+
+    fun setGazingAtNotifications(gazing: Boolean) {
+        _uiState.update { it.copy(isGazingAtNotifications = gazing) }
+    }
+
+    // ---------------------------------------------------------------------------
     // Email selection
     // ---------------------------------------------------------------------------
 
     fun selectEmail(email: Email) {
         viewModelScope.launch {
-            // Optimistically mark as read in local state
             _uiState.update { state ->
                 val updatedEmails = state.emails.map {
                     if (it.id == email.id) it.copy(isRead = true) else it
@@ -94,6 +184,7 @@ class EmailViewModel(
                 state.copy(
                     emails = updatedEmails,
                     selectedEmail = email.copy(isRead = true),
+                    selectedContact = MockData.getContactForEmail(email.copy(isRead = true)),
                     mode = AppMode.READING,
                     isAiSummaryExpanded = true,
                     replySuggestions = emptyList(),
@@ -102,11 +193,43 @@ class EmailViewModel(
             }
             loadContactFor(email)
 
-            // Persist read status to backend (fire-and-forget)
             if (!email.isRead) repository.markAsRead(email.id)
 
-            // Pre-fetch reply suggestions in the background
             loadReplySuggestions(email.id)
+        }
+    }
+
+    fun navigateNextUnread() {
+        _uiState.update { state ->
+            val nextUnread = state.emails.firstOrNull { !it.isRead }
+            if (nextUnread != null) {
+                val updatedEmails = state.emails.map {
+                    if (it.id == nextUnread.id) it.copy(isRead = true) else it
+                }
+                val readEmail = nextUnread.copy(isRead = true)
+                state.copy(
+                    emails = updatedEmails,
+                    selectedEmail = readEmail,
+                    selectedContact = MockData.getContactForEmail(readEmail),
+                    unreadCount = updatedEmails.count { !it.isRead },
+                )
+            } else {
+                state
+            }
+        }
+    }
+
+    fun toggleStar(email: Email) {
+        _uiState.update { state ->
+            val updated = state.emails.map {
+                if (it.id == email.id) it.copy(isStarred = !it.isStarred) else it
+            }
+            val updatedSelected = if (state.selectedEmail?.id == email.id) {
+                state.selectedEmail.copy(isStarred = !state.selectedEmail.isStarred)
+            } else {
+                state.selectedEmail
+            }
+            state.copy(emails = updated, selectedEmail = updatedSelected)
         }
     }
 
@@ -118,6 +241,20 @@ class EmailViewModel(
         loadEmails(category = category)
     }
 
+    fun prioritySortedEmails(): List<Email> {
+        val priorityOrder = mapOf(
+            Priority.HIGH to 0,
+            Priority.MEDIUM to 1,
+            Priority.LOW to 2,
+            Priority.IGNORE to 3,
+        )
+        return _uiState.value.emails.sortedWith(
+            compareBy<Email> { it.isRead }
+                .thenBy { priorityOrder[it.priority] ?: 3 }
+                .thenByDescending { it.urgencyScore }
+        )
+    }
+
     // ---------------------------------------------------------------------------
     // AI summary
     // ---------------------------------------------------------------------------
@@ -127,7 +264,7 @@ class EmailViewModel(
     }
 
     // ---------------------------------------------------------------------------
-    // Actions
+    // Compose
     // ---------------------------------------------------------------------------
 
     fun startCompose() {
@@ -135,29 +272,109 @@ class EmailViewModel(
     }
 
     fun cancelCompose() {
-        _uiState.update { it.copy(mode = AppMode.READING, voiceDraft = null) }
+        _uiState.update {
+            it.copy(mode = AppMode.READING, isVoiceComposing = false, voiceDraft = null)
+        }
+    }
+
+    fun startVoiceCompose() {
+        val email = _uiState.value.selectedEmail ?: return
+        _uiState.update {
+            it.copy(
+                isVoiceComposing = true,
+                voiceDraft = VoiceDraft(
+                    recipientName = email.sender,
+                    subject = "Re: ${email.subject}",
+                ),
+            )
+        }
+    }
+
+    fun voiceReply(briefInstruction: String) {
+        val email = _uiState.value.selectedEmail ?: return
+        val draft = email.suggestedReply ?: "Thank you for your email. $briefInstruction"
+        _uiState.update {
+            it.copy(
+                isVoiceComposing = true,
+                voiceDraft = VoiceDraft(
+                    recipientName = email.sender,
+                    subject = "Re: ${email.subject}",
+                    draftText = draft,
+                    isGenerating = false,
+                    confidence = email.replyConfidence,
+                ),
+            )
+        }
+    }
+
+    fun confirmSend() {
+        _uiState.update {
+            it.copy(
+                mode = AppMode.READING,
+                isVoiceComposing = false,
+                voiceDraft = null,
+                toastMessage = ToastMessage(
+                    "Sent to ${it.selectedEmail?.sender ?: "recipient"}"
+                ),
+            )
+        }
+    }
+
+    fun dismissToast() {
+        _uiState.update { it.copy(toastMessage = null) }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Triage actions
+    // ---------------------------------------------------------------------------
+
+    fun archiveEmail(email: Email) {
+        _uiState.update { state ->
+            val remaining = state.emails.filter { it.id != email.id }
+            val newSelected = if (state.selectedEmail?.id == email.id) {
+                remaining.firstOrNull()
+            } else {
+                state.selectedEmail
+            }
+            state.copy(
+                emails = remaining,
+                selectedEmail = newSelected,
+                selectedContact = newSelected?.let { MockData.getContactForEmail(it) },
+                unreadCount = remaining.count { !it.isRead },
+                toastMessage = ToastMessage("Archived: ${email.sender}"),
+            )
+        }
+    }
+
+    fun snoozeEmail(email: Email) {
+        _uiState.update { state ->
+            val remaining = state.emails.filter { it.id != email.id }
+            val newSelected = if (state.selectedEmail?.id == email.id) {
+                remaining.firstOrNull()
+            } else {
+                state.selectedEmail
+            }
+            state.copy(
+                emails = remaining,
+                selectedEmail = newSelected,
+                selectedContact = newSelected?.let { MockData.getContactForEmail(it) },
+                unreadCount = remaining.count { !it.isRead },
+                toastMessage = ToastMessage("Snoozed: ${email.sender}"),
+            )
+        }
     }
 
     fun archiveSelected() {
         val selected = _uiState.value.selectedEmail ?: return
+        archiveEmail(selected)
         viewModelScope.launch {
-            // Optimistic removal
-            _uiState.update { state ->
-                val remaining = state.emails.filter { it.id != selected.id }
-                state.copy(
-                    emails = remaining,
-                    selectedEmail = remaining.firstOrNull(),
-                    unreadCount = remaining.count { !it.isRead },
-                )
-            }
-            _uiState.value.selectedEmail?.let { loadContactFor(it) }
             repository.archive(selected.id)
         }
     }
 
     fun snoozeSelected() {
-        // Phase 1 stub: removes from list (production schedules a WorkManager reminder)
-        archiveSelected()
+        val selected = _uiState.value.selectedEmail ?: return
+        snoozeEmail(selected)
     }
 
     fun forwardSelected() {
@@ -165,14 +382,7 @@ class EmailViewModel(
     }
 
     fun sendDraft() {
-        val draft = _uiState.value.voiceDraft ?: run {
-            _uiState.update { it.copy(mode = AppMode.READING) }
-            return
-        }
-        viewModelScope.launch {
-            repository.sendEmail(draft)
-            _uiState.update { it.copy(mode = AppMode.READING, voiceDraft = null) }
-        }
+        confirmSend()
     }
 
     fun setStarred(messageId: String, starred: Boolean) {
@@ -208,7 +418,7 @@ class EmailViewModel(
             ).fold(
                 onSuccess = { draft ->
                     _uiState.update {
-                        it.copy(mode = AppMode.COMPOSING, voiceDraft = draft)
+                        it.copy(mode = AppMode.COMPOSING)
                     }
                 },
                 onFailure = { error ->

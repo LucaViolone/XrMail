@@ -1,0 +1,260 @@
+package com.xremail.app.ui.spatial
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Surface
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.unit.dp
+import androidx.xr.compose.spatial.ContentEdge
+import androidx.xr.compose.spatial.Orbiter
+import androidx.xr.compose.spatial.Subspace
+import androidx.xr.compose.subspace.SpatialPanel
+import androidx.xr.compose.subspace.layout.SubspaceModifier
+import androidx.xr.compose.subspace.layout.height
+import androidx.xr.compose.subspace.layout.offset
+import androidx.xr.compose.subspace.layout.width
+import com.xremail.app.data.Email
+import com.xremail.app.data.EmailCategory
+import com.xremail.app.data.Priority
+import com.xremail.app.ui.notifications.NotificationBanner
+import com.xremail.app.ui.notifications.NotificationCardStack
+import com.xremail.app.ui.peripheral.AmbientHud
+import com.xremail.app.ui.peripheral.TtsProgressBar
+import com.xremail.app.ui.peripheral.TriagePanel
+import com.xremail.app.ui.peripheral.VoiceComposeOverlay
+import com.xremail.app.ui.peripheral.VoiceStatusIndicator
+import com.xremail.app.ui.theme.XREmailColors
+import com.xremail.app.viewmodel.EmailUiState
+import com.xremail.app.viewmodel.InteractionTier
+import com.xremail.app.viewmodel.VoiceDraft
+import com.xremail.app.voice.GeminiLiveManager
+import com.xremail.app.voice.TTSManager
+import com.xremail.app.voice.VoiceComposeManager
+
+/**
+ * Depth-aware spatial layout using the three-plane system:
+ *
+ * - Background (Z=30dp): Ambient HUD — notification banner, always visible
+ * - Foreground (Z=15dp): Notification Cards — gaze-expanded, closer to user
+ * - Content (Z=0dp): Triage and Focus — primary interaction planes
+ *
+ * Transitions:
+ *   AMBIENT_HUD → (gaze dwell) → NOTIFICATION_CARDS → (pinch) → TRIAGE → (pinch-hold) → FOCUS
+ *   Each level auto-collapses when gaze moves away or via gesture.
+ */
+@Composable
+fun InteractionTierRouter(
+    uiState: EmailUiState,
+    prioritySortedEmails: List<Email>,
+    ttsState: TTSManager.PlaybackState,
+    ttsProgress: Float,
+    tiltScrollDelta: Float,
+    voiceSessionState: GeminiLiveManager.SessionState,
+    voiceComposeState: VoiceComposeManager.ComposeState,
+    voiceDraft: VoiceDraft?,
+    onExpandToNotifications: () -> Unit,
+    onCollapseFromNotifications: () -> Unit,
+    onExpandToTriage: () -> Unit,
+    onCollapseToHud: () -> Unit,
+    onExpandToFocus: () -> Unit,
+    onCollapseToTriage: () -> Unit,
+    onEmailSelected: (Email) -> Unit,
+    onOpenFromNotification: (Email) -> Unit,
+    onCategorySelected: (EmailCategory?) -> Unit,
+    onToggleAiSummary: () -> Unit,
+    onReply: () -> Unit,
+    onArchive: () -> Unit,
+    onArchiveEmail: (Email) -> Unit,
+    onSnooze: () -> Unit,
+    onSnoozeEmail: (Email) -> Unit,
+    onForward: () -> Unit,
+    onSend: () -> Unit,
+    onCancelCompose: () -> Unit,
+    onDismissToast: () -> Unit,
+) {
+    Subspace {
+        when (uiState.tier) {
+            InteractionTier.AMBIENT_HUD -> {
+                // Background plane: notification banner HUD in upper-right peripheral zone
+                // Positioned at ~25 degrees off-center for peripheral visibility
+                SpatialPanel(
+                    modifier = SubspaceModifier
+                        .width(300.dp)
+                        .height(180.dp)
+                        .offset(x = 180.dp, y = (-160).dp, z = 30.dp),
+                ) {
+                    AmbientHud(
+                        unreadCount = uiState.unreadCount,
+                        hasHighPriority = uiState.emails.any {
+                            it.priority == Priority.HIGH && !it.isRead
+                        },
+                        emails = uiState.emails,
+                        ttsState = ttsState,
+                        ttsProgress = ttsProgress,
+                        voiceState = voiceSessionState,
+                        toastMessage = uiState.toastMessage,
+                        onExpandToNotifications = onExpandToNotifications,
+                        onDismissToast = onDismissToast,
+                    )
+                }
+
+                if (uiState.isVoiceComposing) {
+                    SpatialPanel(
+                        modifier = SubspaceModifier
+                            .width(340.dp)
+                            .height(280.dp)
+                            .offset(x = 180.dp, y = (-40).dp, z = 20.dp),
+                    ) {
+                        VoiceComposeOverlay(
+                            draft = voiceDraft ?: uiState.voiceDraft,
+                            composeState = voiceComposeState,
+                        )
+                    }
+                }
+            }
+
+            InteractionTier.NOTIFICATION_CARDS -> {
+                // Foreground plane: cards fan out closer to user for easy reading
+                // while walking. Positioned slightly right and up to avoid
+                // obstructing the path ahead.
+                SpatialPanel(
+                    modifier = SubspaceModifier
+                        .width(340.dp)
+                        .height(520.dp)
+                        .offset(x = 140.dp, y = (-80).dp, z = 15.dp),
+                ) {
+                    NotificationCardStack(
+                        emails = uiState.emails,
+                        highlightedId = uiState.highlightedNotificationId,
+                        onSelectEmail = onOpenFromNotification,
+                        onArchiveEmail = onArchiveEmail,
+                        onSnoozeEmail = onSnoozeEmail,
+                        onCollapseToHud = onCollapseFromNotifications,
+                        onExpandToTriage = onExpandToTriage,
+                    )
+                }
+
+                // Keep a minimal HUD visible in the corner during card view
+                SpatialPanel(
+                    modifier = SubspaceModifier
+                        .width(200.dp)
+                        .height(60.dp)
+                        .offset(x = 220.dp, y = (-200).dp, z = 30.dp),
+                ) {
+                    MinimalStatusBar(
+                        ttsState = ttsState,
+                        ttsProgress = ttsProgress,
+                        voiceState = voiceSessionState,
+                    )
+                }
+            }
+
+            InteractionTier.TRIAGE -> {
+                // Content plane: centered for focused triage interaction
+                SpatialPanel(
+                    modifier = SubspaceModifier
+                        .width(420.dp)
+                        .height(760.dp),
+                ) {
+                    Surface(color = XREmailColors.surface) {
+                        TriagePanel(
+                            emails = prioritySortedEmails,
+                            selectedEmail = uiState.selectedEmail,
+                            ttsState = ttsState,
+                            ttsSummary = uiState.selectedEmail?.aiSummary ?: "",
+                            tiltScrollDelta = tiltScrollDelta,
+                            onEmailSelected = onEmailSelected,
+                            onArchive = onArchiveEmail,
+                            onSnooze = onSnoozeEmail,
+                            onCollapseToHud = onCollapseToHud,
+                            onExpandToFocus = onExpandToFocus,
+                        )
+                    }
+
+                    Orbiter(
+                        position = ContentEdge.Top,
+                        offset = 48.dp,
+                        alignment = Alignment.End,
+                    ) {
+                        NotificationBanner(
+                            emails = uiState.emails,
+                            onExpand = {},
+                        )
+                    }
+                }
+
+                if (uiState.isVoiceComposing) {
+                    SpatialPanel(
+                        modifier = SubspaceModifier
+                            .width(380.dp)
+                            .height(300.dp)
+                            .offset(x = 240.dp, z = 10.dp),
+                    ) {
+                        VoiceComposeOverlay(
+                            draft = voiceDraft ?: uiState.voiceDraft,
+                            composeState = voiceComposeState,
+                        )
+                    }
+                }
+            }
+
+            InteractionTier.FOCUS -> {
+                SpatialEmailLayout(
+                    emails = uiState.emails,
+                    selectedEmail = uiState.selectedEmail,
+                    selectedContact = uiState.selectedContact,
+                    mode = uiState.mode,
+                    activeCategory = uiState.activeCategory,
+                    isAiSummaryExpanded = uiState.isAiSummaryExpanded,
+                    unreadCount = uiState.unreadCount,
+                    onEmailSelected = onEmailSelected,
+                    onCategorySelected = onCategorySelected,
+                    onToggleAiSummary = onToggleAiSummary,
+                    onReply = onReply,
+                    onArchive = onArchive,
+                    onSnooze = onSnooze,
+                    onForward = onForward,
+                    onSend = onSend,
+                    onCancelCompose = onCancelCompose,
+                    onCollapse = onCollapseToTriage,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Tiny status bar shown during NOTIFICATION_CARDS tier so the user
+ * can still see TTS progress and voice status in the corner.
+ */
+@Composable
+private fun MinimalStatusBar(
+    ttsState: TTSManager.PlaybackState,
+    ttsProgress: Float,
+    voiceState: GeminiLiveManager.SessionState,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(XREmailColors.surface.copy(alpha = 0.85f))
+            .padding(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        TtsProgressBar(
+            state = ttsState,
+            progress = ttsProgress,
+            modifier = Modifier.weight(1f),
+        )
+        Spacer(Modifier.width(8.dp))
+        VoiceStatusIndicator(voiceState = voiceState)
+    }
+}
