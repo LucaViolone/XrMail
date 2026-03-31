@@ -1,0 +1,1 @@
+# XR Email ProGuard rules
