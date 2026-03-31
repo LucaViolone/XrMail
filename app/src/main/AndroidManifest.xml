@@ -2,6 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.HAND_TRACKING" />
+    <uses-permission android:name="android.permission.FACE_TRACKING" />
     <uses-permission android:name="android.permission.EYE_TRACKING_COARSE" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.INTERNET" />

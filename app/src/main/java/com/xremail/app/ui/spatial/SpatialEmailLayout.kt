@@ -1,8 +1,15 @@
 package com.xremail.app.ui.spatial
 
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.xr.compose.spatial.ContentEdge
 import androidx.xr.compose.spatial.Orbiter
@@ -43,90 +50,110 @@ fun SpatialEmailLayout(
     onForward: () -> Unit,
     onSend: () -> Unit,
     onCancelCompose: () -> Unit,
+    onCollapse: (() -> Unit)? = null,
 ) {
-    Subspace {
-        SpatialCurvedRow(
-            curveRadius = 825.dp,
+    SpatialCurvedRow(
+        curveRadius = 825.dp,
+    ) {
+        SpatialPanel(
+            modifier = SubspaceModifier
+                .width(420.dp)
+                .height(860.dp),
+            dragPolicy = MovePolicy(),
+            resizePolicy = ResizePolicy(),
         ) {
-            SpatialPanel(
-                modifier = SubspaceModifier
-                    .width(420.dp)
-                    .height(860.dp),
-                dragPolicy = MovePolicy(),
-                resizePolicy = ResizePolicy(),
-            ) {
-                Surface(color = XREmailColors.surface) {
-                    InboxScreen(
-                        emails = emails,
-                        selectedEmail = selectedEmail,
-                        activeCategory = activeCategory,
-                        onEmailSelected = onEmailSelected,
-                        onCategorySelected = onCategorySelected,
-                    )
-                }
+            Surface(color = XREmailColors.surface) {
+                InboxScreen(
+                    emails = emails,
+                    selectedEmail = selectedEmail,
+                    activeCategory = activeCategory,
+                    onEmailSelected = onEmailSelected,
+                    onCategorySelected = onCategorySelected,
+                )
+            }
 
+            Orbiter(
+                position = ContentEdge.Top,
+                offset = 48.dp,
+                alignment = Alignment.End,
+            ) {
+                NotificationPill(unreadCount = unreadCount)
+            }
+
+            if (onCollapse != null) {
                 Orbiter(
                     position = ContentEdge.Top,
                     offset = 48.dp,
-                    alignment = Alignment.End,
+                    alignment = Alignment.Start,
                 ) {
-                    NotificationPill(unreadCount = unreadCount)
-                }
-            }
-
-            // Center panel: Reader or Compose
-            SpatialPanel(
-                modifier = SubspaceModifier
-                    .width(840.dp)
-                    .height(860.dp),
-                dragPolicy = MovePolicy(),
-                resizePolicy = ResizePolicy(),
-            ) {
-                Surface(color = XREmailColors.surface) {
-                    when (mode) {
-                        AppMode.READING -> EmailReaderScreen(
-                            email = selectedEmail,
-                            isAiSummaryExpanded = isAiSummaryExpanded,
-                            onToggleAiSummary = onToggleAiSummary,
-                        )
-                        AppMode.COMPOSING -> ComposeScreen(
-                            replyTo = selectedEmail,
-                            onSend = onSend,
-                            onCancel = onCancelCompose,
+                    FilledIconButton(
+                        onClick = onCollapse,
+                        colors = IconButtonDefaults.filledIconButtonColors(
+                            containerColor = XREmailColors.surfaceElevated,
+                            contentColor = XREmailColors.onSurfaceVariant,
+                        ),
+                        modifier = Modifier.size(36.dp),
+                    ) {
+                        Icon(
+                            Icons.Default.KeyboardArrowDown,
+                            contentDescription = "Collapse to Triage",
+                            modifier = Modifier.size(20.dp),
                         )
                     }
                 }
+            }
+        }
 
-                Orbiter(
-                    position = ContentEdge.Bottom,
-                    offset = 96.dp,
-                    alignment = Alignment.CenterHorizontally,
-                ) {
-                    QuickActionBar(
-                        onReply = onReply,
-                        onArchive = onArchive,
-                        onSnooze = onSnooze,
-                        onForward = onForward,
+        SpatialPanel(
+            modifier = SubspaceModifier
+                .width(840.dp)
+                .height(860.dp),
+            dragPolicy = MovePolicy(),
+            resizePolicy = ResizePolicy(),
+        ) {
+            Surface(color = XREmailColors.surface) {
+                when (mode) {
+                    AppMode.READING -> EmailReaderScreen(
+                        email = selectedEmail,
+                        isAiSummaryExpanded = isAiSummaryExpanded,
+                        onToggleAiSummary = onToggleAiSummary,
+                    )
+                    AppMode.COMPOSING -> ComposeScreen(
+                        replyTo = selectedEmail,
+                        onSend = onSend,
+                        onCancel = onCancelCompose,
                     )
                 }
             }
 
-            // Right panel: Context sidebar
-            SpatialPanel(
-                modifier = SubspaceModifier
-                    .width(380.dp)
-                    .height(860.dp),
-                dragPolicy = MovePolicy(),
-                resizePolicy = ResizePolicy(),
+            Orbiter(
+                position = ContentEdge.Bottom,
+                offset = 96.dp,
+                alignment = Alignment.CenterHorizontally,
             ) {
-                Surface(color = XREmailColors.surface) {
-                    ContextSidebar(
-                        contact = selectedContact,
-                        attachments = selectedEmail?.attachments.orEmpty(),
-                        actionItems = selectedEmail?.actionItems.orEmpty(),
-                        threadCount = selectedEmail?.threadCount ?: 0,
-                    )
-                }
+                QuickActionBar(
+                    onReply = onReply,
+                    onArchive = onArchive,
+                    onSnooze = onSnooze,
+                    onForward = onForward,
+                )
+            }
+        }
+
+        SpatialPanel(
+            modifier = SubspaceModifier
+                .width(380.dp)
+                .height(860.dp),
+            dragPolicy = MovePolicy(),
+            resizePolicy = ResizePolicy(),
+        ) {
+            Surface(color = XREmailColors.surface) {
+                ContextSidebar(
+                    contact = selectedContact,
+                    attachments = selectedEmail?.attachments.orEmpty(),
+                    actionItems = selectedEmail?.actionItems.orEmpty(),
+                    threadCount = selectedEmail?.threadCount ?: 0,
+                )
             }
         }
     }

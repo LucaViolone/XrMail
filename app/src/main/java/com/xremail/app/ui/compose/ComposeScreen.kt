@@ -1,8 +1,10 @@
 package com.xremail.app.ui.compose
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -18,6 +20,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.Button
@@ -39,6 +42,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.xremail.app.data.Email
@@ -66,6 +70,7 @@ fun ComposeScreen(
     val density = LocalDensity.current
     val swipeThresholdPx = with(density) { 20.dp.toPx() }  // tune this
     var body by remember(replyTo?.id) { mutableStateOf(suggestedDraft) }
+    var isVoiceMode by remember { mutableStateOf(false) }
 
     val transparentFieldColors = TextFieldDefaults.colors(
         focusedContainerColor = Color.Transparent,
@@ -224,15 +229,66 @@ fun ComposeScreen(
             Spacer(Modifier.height(12.dp))
         }
 
-        TextField(
-            value = body,
-            onValueChange = { body = it },
-            placeholder = { Text("Write your email...") },
-            colors = transparentFieldColors,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(240.dp),
-        )
+        AnimatedVisibility(
+            visible = !isVoiceMode,
+            enter = fadeIn(),
+            exit = fadeOut(),
+        ) {
+            TextField(
+                value = body,
+                onValueChange = { body = it },
+                placeholder = { Text("Write your email...") },
+                colors = transparentFieldColors,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(240.dp),
+            )
+        }
+
+        AnimatedVisibility(
+            visible = isVoiceMode,
+            enter = fadeIn(),
+            exit = fadeOut(),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(240.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(XREmailColors.surfaceVariant.copy(alpha = 0.5f))
+                    .padding(20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Icon(
+                    Icons.Default.Mic,
+                    contentDescription = null,
+                    tint = XREmailColors.secondary,
+                    modifier = Modifier.size(48.dp),
+                )
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    text = "Listening...",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = XREmailColors.secondary,
+                    fontWeight = FontWeight.Medium,
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = "Describe your reply and AI will draft it",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = XREmailColors.onSurfaceDim,
+                    fontStyle = FontStyle.Italic,
+                )
+                if (body.isNotBlank()) {
+                    Spacer(Modifier.height(16.dp))
+                    Text(
+                        text = body,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = XREmailColors.onSurface,
+                    )
+                }
+            }
+        }
 
         Spacer(Modifier.height(24.dp))
 
@@ -241,15 +297,20 @@ fun ComposeScreen(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             OutlinedButton(
-                onClick = {},
+                onClick = { isVoiceMode = !isVoiceMode },
                 colors = ButtonDefaults.outlinedButtonColors(
-                    contentColor = XREmailColors.onSurfaceVariant,
+                    contentColor = if (isVoiceMode) XREmailColors.secondary
+                    else XREmailColors.onSurfaceVariant,
                 ),
                 shape = RoundedCornerShape(24.dp),
             ) {
-                Icon(Icons.Default.Mic, contentDescription = null, modifier = Modifier.size(18.dp))
+                Icon(
+                    if (isVoiceMode) Icons.Default.Keyboard else Icons.Default.Mic,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
                 Spacer(Modifier.width(6.dp))
-                Text("Dictate")
+                Text(if (isVoiceMode) "Keyboard" else "Dictate")
             }
 
             Spacer(Modifier.weight(1f))

@@ -1,33 +1,51 @@
 package com.xremail.app.tracking
 
+import android.util.Log
+import androidx.xr.arcore.ExperimentalGesturesApi
+import androidx.xr.arcore.Tilt
+import androidx.xr.arcore.TiltGesture
+import androidx.xr.runtime.Session
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 
-/**
- * Uses the TiltGesture API (alpha10+, no permission required) to scroll
- * email lists by tilting the device.
- *
- * Production implementation:
- * ```
- * TiltGesture.observe(session).collect { tilt ->
- *     when (tilt.state) {
- *         TiltState.DOWN -> controller.onTilt(tilt.progress)
- *         TiltState.UP -> controller.onTilt(-tilt.progress)
- *         TiltState.NEUTRAL -> controller.onTilt(0f)
- *     }
- * }
- * ```
- *
- * The scroll delta is exposed as a StateFlow that UI can collect to call
- * LazyListState.scrollBy().
- */
+private const val TAG = "TiltScrollController"
+
 class TiltScrollController {
 
     private val _scrollDelta = MutableStateFlow(0f)
     val scrollDelta: StateFlow<Float> = _scrollDelta.asStateFlow()
 
     private var sensitivity = 100f
+    private var trackingJob: Job? = null
+
+    @OptIn(ExperimentalGesturesApi::class)
+    fun startTracking(session: Session, scope: CoroutineScope) {
+        trackingJob?.cancel()
+
+        trackingJob = scope.launch {
+            try {
+                TiltGesture.detect(session).collect { state ->
+                    when (state.tilt) {
+                        Tilt.DOWN -> onTilt(state.progress)
+                        Tilt.UP -> onTilt(-state.progress)
+                        else -> onTilt(0f)
+                    }
+                }
+            } catch (e: IllegalStateException) {
+                Log.w(TAG, "Tilt detection failed (device tracking may be disabled): ${e.message}")
+            }
+        }
+    }
+
+    fun stopTracking() {
+        trackingJob?.cancel()
+        trackingJob = null
+        _scrollDelta.value = 0f
+    }
 
     fun onTilt(progress: Float) {
         _scrollDelta.value = progress * sensitivity
