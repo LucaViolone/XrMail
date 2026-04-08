@@ -47,6 +47,7 @@ data class EmailUiState(
     val isVoiceComposing: Boolean = false,
     val highlightedNotificationId: String? = null,
     val isGazingAtNotifications: Boolean = false,
+    val showEmulatorHelp: Boolean = true,
 )
 
 class EmailViewModel(
@@ -163,12 +164,25 @@ class EmailViewModel(
         _uiState.update { it.copy(tier = InteractionTier.FOCUS) }
     }
 
+    fun collapseToNotificationCards() {
+        _uiState.update {
+            it.copy(
+                tier = InteractionTier.NOTIFICATION_CARDS,
+                isGazingAtNotifications = true,
+            )
+        }
+    }
+
     fun collapseToTriage() {
         _uiState.update { it.copy(tier = InteractionTier.TRIAGE) }
     }
 
     fun setGazingAtNotifications(gazing: Boolean) {
         _uiState.update { it.copy(isGazingAtNotifications = gazing) }
+    }
+
+    fun toggleEmulatorHelp() {
+        _uiState.update { it.copy(showEmulatorHelp = !it.showEmulatorHelp) }
     }
 
     // ---------------------------------------------------------------------------

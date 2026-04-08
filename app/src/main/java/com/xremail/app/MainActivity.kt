@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.util.Log
+import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -30,12 +31,10 @@ import com.xremail.app.backend.service.GmailRepository
 import com.xremail.app.backend.mock.MockEmailRepository
 import com.xremail.app.tracking.FaceAttentionTracker
 import com.xremail.app.tracking.GestureToActionMapper
+import com.xremail.app.tracking.KeyboardGestureDispatcher
 import com.xremail.app.tracking.SecondaryHandGestures
 import com.xremail.app.tracking.TiltScrollController
 import com.xremail.app.tracking.XrSessionManager
-import com.xremail.app.ui.spatial.DisplayMode
-import com.xremail.app.ui.spatial.DisplayModeRouter
-import com.xremail.app.ui.spatial.GlimmerEmailApp
 import com.xremail.app.ui.spatial.InteractionTierRouter
 import com.xremail.app.ui.theme.XREmailTheme
 import com.xremail.app.viewmodel.EmailViewModel
@@ -52,6 +51,18 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var tokenManager: TokenManager
     private lateinit var authRepository: AuthRepository
+
+    var keyboardDispatcher: KeyboardGestureDispatcher? = null
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        // Let Compose panels handle key events first (when they have focus)
+        if (super.dispatchKeyEvent(event)) return true
+        // Fallback for when no Compose panel has focus
+        if (event.action == KeyEvent.ACTION_DOWN) {
+            return keyboardDispatcher?.onKeyDown(event.keyCode) ?: false
+        }
+        return false
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -77,9 +88,7 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             XREmailTheme {
-                XREmailApp(
-                    viewModelFactory = EmailViewModel.Factory(emailRepository)
-                )
+                XrMailApp(viewModelFactory = EmailViewModel.Factory(emailRepository))
             }
         }
 
@@ -113,18 +122,8 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun XREmailApp(viewModelFactory: EmailViewModel.Factory) {
-    val displayMode = DisplayModeRouter.detect()
-
-    when (displayMode) {
-        DisplayMode.GLASSES_ADDITIVE -> GlimmerEmailApp()
-        DisplayMode.HEADSET -> HeadsetEmailApp(viewModelFactory)
-    }
-}
-
-@Composable
-private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
-    val viewModel: EmailViewModel = viewModel(factory = factory)
+fun XrMailApp(viewModelFactory: EmailViewModel.Factory) {
+    val viewModel: EmailViewModel = viewModel(factory = viewModelFactory)
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -140,7 +139,15 @@ private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
     val handGestures = remember { SecondaryHandGestures() }
     val tiltScroll = remember { TiltScrollController() }
     val gestureMapper = remember(viewModel) { GestureToActionMapper(viewModel) }
+    val keyboardDispatcher = remember(viewModel, handGestures) {
+        KeyboardGestureDispatcher(viewModel, handGestures)
+    }
     val xrSessionManager = remember { XrSessionManager(faceTracker, handGestures, tiltScroll) }
+
+    // Wire keyboard dispatcher to Activity for emulator key events
+    LaunchedEffect(keyboardDispatcher) {
+        (context as? MainActivity)?.keyboardDispatcher = keyboardDispatcher
+    }
 
     val ttsState by ttsManager.playbackState.collectAsStateWithLifecycle()
     val ttsProgress by ttsManager.progress.collectAsStateWithLifecycle()
@@ -245,6 +252,7 @@ private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
         voiceSessionState = voiceSessionState,
         voiceComposeState = voiceComposeState,
         voiceDraft = voiceDraft,
+        onKeyDown = keyboardDispatcher::onKeyDown,
         onExpandToNotifications = viewModel::expandToNotificationCards,
         onCollapseFromNotifications = viewModel::collapseFromNotificationCards,
         onExpandToTriage = viewModel::expandToTriage,

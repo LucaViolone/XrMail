@@ -1,68 +1,55 @@
 package com.xremail.app.ui.spatial
 
-import androidx.compose.foundation.layout.size
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material3.FilledIconButton
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
-import androidx.xr.compose.spatial.ContentEdge
-import androidx.xr.compose.spatial.Orbiter
-import androidx.xr.compose.spatial.Subspace
-import androidx.xr.compose.subspace.MovePolicy
-import androidx.xr.compose.subspace.ResizePolicy
-import androidx.xr.compose.subspace.SpatialCurvedRow
-import androidx.xr.compose.subspace.SpatialPanel
-import androidx.xr.compose.subspace.layout.SubspaceModifier
-import androidx.xr.compose.subspace.layout.height
-import androidx.xr.compose.subspace.layout.width
 import com.xremail.app.data.Contact
 import com.xremail.app.data.Email
 import com.xremail.app.data.EmailCategory
 import com.xremail.app.ui.compose.ComposeScreen
 import com.xremail.app.ui.context.ContextSidebar
 import com.xremail.app.ui.inbox.InboxScreen
-import com.xremail.app.ui.notifications.NotificationPill
 import com.xremail.app.ui.reader.EmailReaderScreen
 import com.xremail.app.ui.theme.XREmailColors
 import com.xremail.app.viewmodel.AppMode
 
+/**
+ * Three-column focus layout: inbox | reader/compose | context sidebar.
+ *
+ * Renders inside the single expanding SpatialPanel at the FOCUS tier.
+ * Replaces the old SpatialCurvedRow + 3 SpatialPanel approach so that
+ * the entire app lives in one panel that grows and shrinks.
+ */
 @Composable
-fun SpatialEmailLayout(
+fun FocusContent(
     emails: List<Email>,
     selectedEmail: Email?,
     selectedContact: Contact?,
     mode: AppMode,
     activeCategory: EmailCategory?,
     isAiSummaryExpanded: Boolean,
-    unreadCount: Int,
     onEmailSelected: (Email) -> Unit,
     onCategorySelected: (EmailCategory?) -> Unit,
     onToggleAiSummary: () -> Unit,
-    onReply: () -> Unit,
-    onArchive: () -> Unit,
-    onSnooze: () -> Unit,
-    onForward: () -> Unit,
     onSend: () -> Unit,
     onCancelCompose: () -> Unit,
-    onCollapse: (() -> Unit)? = null,
 ) {
-    SpatialCurvedRow(
-        curveRadius = 825.dp,
+    Surface(
+        color = XREmailColors.surface,
+        modifier = Modifier.fillMaxSize(),
     ) {
-        SpatialPanel(
-            modifier = SubspaceModifier
-                .width(420.dp)
-                .height(860.dp),
-            dragPolicy = MovePolicy(),
-            resizePolicy = ResizePolicy(),
-        ) {
-            Surface(color = XREmailColors.surface) {
+        Row(modifier = Modifier.fillMaxSize()) {
+            // Left column: inbox list
+            Surface(
+                color = XREmailColors.surface,
+                modifier = Modifier
+                    .weight(0.25f)
+                    .fillMaxHeight(),
+            ) {
                 InboxScreen(
                     emails = emails,
                     selectedEmail = selectedEmail,
@@ -72,46 +59,15 @@ fun SpatialEmailLayout(
                 )
             }
 
-            Orbiter(
-                position = ContentEdge.Top,
-                offset = 48.dp,
-                alignment = Alignment.End,
+            VerticalDivider(color = XREmailColors.surfaceVariant)
+
+            // Center column: reader or compose
+            Surface(
+                color = XREmailColors.surface,
+                modifier = Modifier
+                    .weight(0.50f)
+                    .fillMaxHeight(),
             ) {
-                NotificationPill(unreadCount = unreadCount)
-            }
-
-            if (onCollapse != null) {
-                Orbiter(
-                    position = ContentEdge.Top,
-                    offset = 48.dp,
-                    alignment = Alignment.Start,
-                ) {
-                    FilledIconButton(
-                        onClick = onCollapse,
-                        colors = IconButtonDefaults.filledIconButtonColors(
-                            containerColor = XREmailColors.surfaceElevated,
-                            contentColor = XREmailColors.onSurfaceVariant,
-                        ),
-                        modifier = Modifier.size(36.dp),
-                    ) {
-                        Icon(
-                            Icons.Default.KeyboardArrowDown,
-                            contentDescription = "Collapse to Triage",
-                            modifier = Modifier.size(20.dp),
-                        )
-                    }
-                }
-            }
-        }
-
-        SpatialPanel(
-            modifier = SubspaceModifier
-                .width(840.dp)
-                .height(860.dp),
-            dragPolicy = MovePolicy(),
-            resizePolicy = ResizePolicy(),
-        ) {
-            Surface(color = XREmailColors.surface) {
                 when (mode) {
                     AppMode.READING -> EmailReaderScreen(
                         email = selectedEmail,
@@ -126,28 +82,15 @@ fun SpatialEmailLayout(
                 }
             }
 
-            Orbiter(
-                position = ContentEdge.Bottom,
-                offset = 96.dp,
-                alignment = Alignment.CenterHorizontally,
-            ) {
-                QuickActionBar(
-                    onReply = onReply,
-                    onArchive = onArchive,
-                    onSnooze = onSnooze,
-                    onForward = onForward,
-                )
-            }
-        }
+            VerticalDivider(color = XREmailColors.surfaceVariant)
 
-        SpatialPanel(
-            modifier = SubspaceModifier
-                .width(380.dp)
-                .height(860.dp),
-            dragPolicy = MovePolicy(),
-            resizePolicy = ResizePolicy(),
-        ) {
-            Surface(color = XREmailColors.surface) {
+            // Right column: context sidebar
+            Surface(
+                color = XREmailColors.surface,
+                modifier = Modifier
+                    .weight(0.25f)
+                    .fillMaxHeight(),
+            ) {
                 ContextSidebar(
                     contact = selectedContact,
                     attachments = selectedEmail?.attachments.orEmpty(),

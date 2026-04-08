@@ -35,9 +35,21 @@ class XrSessionManager(
 
         Log.i(TAG, "Starting XR tracking subsystems")
 
-        handGestures.startTracking(session, contentResolver, scope)
-        faceTracker.startTracking(session, scope)
-        tiltScroll.startTracking(session, scope)
+        try {
+            handGestures.startTracking(session, contentResolver, scope)
+        } catch (e: Exception) {
+            Log.w(TAG, "Hand tracking unavailable: ${e.message}")
+        }
+        try {
+            faceTracker.startTracking(session, scope)
+        } catch (e: Exception) {
+            Log.w(TAG, "Face tracking unavailable: ${e.message}")
+        }
+        try {
+            tiltScroll.startTracking(session, scope)
+        } catch (e: Exception) {
+            Log.w(TAG, "Tilt tracking unavailable: ${e.message}")
+        }
     }
 
     fun stopAll() {
