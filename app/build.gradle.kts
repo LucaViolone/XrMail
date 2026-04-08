@@ -2,6 +2,7 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.google.services)
 }
 
 android {
@@ -76,4 +77,12 @@ dependencies {
     implementation(libs.androidx.xr.compose)
     implementation(libs.androidx.xr.material3)
     implementation(libs.androidx.xr.arcore)
+
+    implementation(platform(libs.firebase.bom))
+    implementation(libs.firebase.ai)
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.0")
+
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.jetbrains.kotlin:kotlin-test:2.1.10")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.0")
 }

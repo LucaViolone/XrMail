@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "000000000001",
+    "project_id": "xremail-placeholder",
+    "storage_bucket": "xremail-placeholder.appspot.com"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:000000000001:android:aaaaaaaaaaaaaaaaaaaaaaaa",
+        "android_client_info": {
+          "package_name": "com.xremail.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "REPLACE_ME"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

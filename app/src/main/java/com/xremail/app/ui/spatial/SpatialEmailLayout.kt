@@ -24,6 +24,7 @@ import com.xremail.app.ui.notifications.NotificationPill
 import com.xremail.app.ui.reader.EmailReaderScreen
 import com.xremail.app.ui.theme.XREmailColors
 import com.xremail.app.viewmodel.AppMode
+import com.xremail.app.voice.GeminiLiveManager
 
 @Composable
 fun SpatialEmailLayout(
@@ -43,6 +44,11 @@ fun SpatialEmailLayout(
     onForward: () -> Unit,
     onSend: () -> Unit,
     onCancelCompose: () -> Unit,
+    draftBody: String,
+    onDraftBodyChange: (String) -> Unit,
+    voiceSessionState: GeminiLiveManager.SessionState,
+    onDictateClick: () -> Unit,
+    assistantStatus: String?,
 ) {
     Subspace {
         SpatialCurvedRow(
@@ -91,6 +97,11 @@ fun SpatialEmailLayout(
                         )
                         AppMode.COMPOSING -> ComposeScreen(
                             replyTo = selectedEmail,
+                            draftBody = draftBody,
+                            onDraftBodyChange = onDraftBodyChange,
+                            voiceSessionState = voiceSessionState,
+                            onDictateClick = onDictateClick,
+                            assistantStatus = assistantStatus,
                             onSend = onSend,
                             onCancel = onCancelCompose,
                         )

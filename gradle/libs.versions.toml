@@ -1,6 +1,8 @@
 [versions]
 agp = "8.9.1"
 kotlin = "2.1.10"
+googleServices = "4.4.2"
+firebaseBom = "34.11.0"
 coreKtx = "1.16.0"
 lifecycleRuntime = "2.9.0"
 activityCompose = "1.10.1"
@@ -88,6 +90,9 @@ exposed-dao = { group = "org.jetbrains.exposed", name = "exposed-dao", version.r
 exposed-jdbc = { group = "org.jetbrains.exposed", name = "exposed-jdbc", version.ref = "exposed" }
 h2-database = { group = "com.h2database", name = "h2", version.ref = "h2" }
 
+firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version.ref = "firebaseBom" }
+firebase-ai = { group = "com.google.firebase", name = "firebase-ai" }
+
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
@@ -95,3 +100,4 @@ kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "ko
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 ktor = { id = "io.ktor.plugin", version.ref = "ktor" }
+google-services = { id = "com.google.gms.google-services", version.ref = "googleServices" }

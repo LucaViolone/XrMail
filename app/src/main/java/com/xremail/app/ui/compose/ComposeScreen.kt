@@ -31,10 +31,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -43,19 +39,23 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.xremail.app.data.Email
 import com.xremail.app.ui.theme.XREmailColors
+import com.xremail.app.voice.GeminiLiveManager
 
 @Composable
 fun ComposeScreen(
     replyTo: Email?,
+    draftBody: String,
+    onDraftBodyChange: (String) -> Unit,
+    voiceSessionState: GeminiLiveManager.SessionState,
+    onDictateClick: () -> Unit,
+    assistantStatus: String?,
     onSend: () -> Unit,
     onCancel: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val toField = replyTo?.let { "${it.sender} <${it.senderEmail}>" } ?: ""
-    val subjectField = replyTo?.let { "Re: ${it.subject}" } ?: ""
+    val toField = replyTo?.let { "${it.sender} <${it.senderEmail}>" }.orEmpty()
+    val subjectField = replyTo?.let { "Re: ${it.subject}" }.orEmpty()
     val suggestedDraft = replyTo?.suggestedReply ?: ""
-
-    var body by remember(replyTo?.id) { mutableStateOf(suggestedDraft) }
 
     val transparentFieldColors = TextFieldDefaults.colors(
         focusedContainerColor = Color.Transparent,
@@ -93,6 +93,15 @@ fun ComposeScreen(
                     tint = XREmailColors.onSurfaceVariant,
                 )
             }
+        }
+
+        assistantStatus?.let { status ->
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = status,
+                style = MaterialTheme.typography.bodySmall,
+                color = XREmailColors.aiAccent,
+            )
         }
 
         Spacer(Modifier.height(16.dp))
@@ -162,8 +171,8 @@ fun ComposeScreen(
         }
 
         TextField(
-            value = body,
-            onValueChange = { body = it },
+            value = draftBody,
+            onValueChange = onDraftBodyChange,
             placeholder = { Text("Write your email...") },
             colors = transparentFieldColors,
             modifier = Modifier
@@ -177,23 +186,24 @@ fun ComposeScreen(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            val listening = voiceSessionState == GeminiLiveManager.SessionState.LISTENING
             OutlinedButton(
-                onClick = {},
+                onClick = onDictateClick,
                 colors = ButtonDefaults.outlinedButtonColors(
-                    contentColor = XREmailColors.onSurfaceVariant,
+                    contentColor = if (listening) XREmailColors.primary else XREmailColors.onSurfaceVariant,
                 ),
                 shape = RoundedCornerShape(24.dp),
             ) {
                 Icon(Icons.Default.Mic, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(6.dp))
-                Text("Dictate")
+                Text(if (listening) "Stop" else "Dictate")
             }
 
             Spacer(Modifier.weight(1f))
 
             Button(
                 onClick = onSend,
-                enabled = body.isNotBlank(),
+                enabled = draftBody.isNotBlank(),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = XREmailColors.primary,
                     contentColor = XREmailColors.surface,

@@ -1,13 +1,24 @@
 package com.xremail.app
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.util.Log
+import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.xremail.app.backend.service.AuthRepository
@@ -21,6 +32,7 @@ import com.xremail.app.ui.spatial.GlimmerEmailApp
 import com.xremail.app.ui.spatial.SpatialEmailLayout
 import com.xremail.app.ui.theme.XREmailTheme
 import com.xremail.app.viewmodel.EmailViewModel
+import com.xremail.app.voice.GeminiLiveManager
 
 class MainActivity : ComponentActivity() {
 
@@ -60,7 +72,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             XREmailTheme {
                 XREmailApp(
-                    viewModelFactory = EmailViewModel.Factory(emailRepository)
+                    viewModelFactory = EmailViewModel.Factory(application, emailRepository),
                 )
             }
         }
@@ -119,6 +131,40 @@ fun XREmailApp(viewModelFactory: EmailViewModel.Factory) {
 private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
     val viewModel: EmailViewModel = viewModel(factory = factory)
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val geminiLive = remember { GeminiLiveManager() }
+    val liveVoiceState by geminiLive.state.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+
+    val audioPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+        onResult = { granted ->
+            if (granted) {
+                geminiLive.toggleListening(context)
+            } else {
+                Toast.makeText(context, "Microphone permission is required for dictation", Toast.LENGTH_SHORT).show()
+            }
+        },
+    )
+
+    SideEffect {
+        geminiLive.setVoiceSendGate { viewModel.isVoiceSendArmed() }
+    }
+
+    LaunchedEffect(Unit) {
+        geminiLive.commands.collect { viewModel.handleVoiceCommand(it) }
+    }
+
+    LaunchedEffect(Unit) {
+        geminiLive.lastError.collect { msg ->
+            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            geminiLive.disconnect()
+        }
+    }
 
     SpatialEmailLayout(
         emails = uiState.emails,
@@ -135,7 +181,20 @@ private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
         onArchive = viewModel::archiveSelected,
         onSnooze = viewModel::snoozeSelected,
         onForward = viewModel::forwardSelected,
-        onSend = viewModel::sendDraft,
+        onSend = { viewModel.sendDraft(isFromVoice = false) },
         onCancelCompose = viewModel::cancelCompose,
+        draftBody = uiState.draftBody,
+        onDraftBodyChange = viewModel::updateDraftBody,
+        voiceSessionState = liveVoiceState,
+        onDictateClick = {
+            when {
+                ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+                    PackageManager.PERMISSION_GRANTED -> {
+                    geminiLive.toggleListening(context)
+                }
+                else -> audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            }
+        },
+        assistantStatus = uiState.assistantStatus,
     )
 }
