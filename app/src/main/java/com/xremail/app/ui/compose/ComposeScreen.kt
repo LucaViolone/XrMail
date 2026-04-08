@@ -43,6 +43,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.xremail.app.data.Email
 import com.xremail.app.ui.theme.XREmailColors
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerId
+import androidx.compose.ui.input.pointer.changedToUpIgnoreConsumed
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.input.pointer.consumePositionChange
 
 @Composable
 fun ComposeScreen(
@@ -54,7 +63,8 @@ fun ComposeScreen(
     val toField = replyTo?.let { "${it.sender} <${it.senderEmail}>" } ?: ""
     val subjectField = replyTo?.let { "Re: ${it.subject}" } ?: ""
     val suggestedDraft = replyTo?.suggestedReply ?: ""
-
+    val density = LocalDensity.current
+    val swipeThresholdPx = with(density) { 20.dp.toPx() }  // tune this
     var body by remember(replyTo?.id) { mutableStateOf(suggestedDraft) }
 
     val transparentFieldColors = TextFieldDefaults.colors(
@@ -68,7 +78,60 @@ fun ComposeScreen(
         focusedLabelColor = XREmailColors.onSurfaceVariant,
         unfocusedLabelColor = XREmailColors.onSurfaceDim,
     )
-
+    Box(
+    modifier = Modifier
+        .fillMaxSize()
+        .pointerInput(body, onSend) {
+            awaitEachGesture {
+                // Wait for first down of this gesture
+                val firstDown = awaitFirstDown(requireUnconsumed = false)
+                // Track active pointers (fingers) by id -> last position
+                val lastPos = mutableMapOf<PointerId, androidx.compose.ui.geometry.Offset>()
+                lastPos[firstDown.id] = firstDown.position
+                var accumulatedDx = 0f
+                var armed = false
+                var sent = false
+                while (true) {
+                    val event = awaitPointerEvent(pass = PointerEventPass.Main)
+                    // Update positions
+                    for (ch in event.changes) {
+                        if (ch.pressed) {
+                            lastPos[ch.id] = ch.position
+                        } else if (ch.changedToUpIgnoreConsumed()) {
+                            lastPos.remove(ch.id)
+                        }
+                    }
+                    val pressedCount = event.changes.count { it.pressed }
+                    // Only engage when 2+ fingers are down
+                    if (pressedCount >= 2) {
+                        if (!armed) {
+                            // when we first reach 2 fingers, zero out motion
+                            accumulatedDx = 0f
+                            armed = true
+                        }
+                        // Use average horizontal movement of the pressed pointers this frame
+                        val pressed = event.changes.filter { it.pressed }
+                        val frameDx =
+                            pressed.map { it.positionChange().x }.average().toFloat()
+                        accumulatedDx += frameDx
+                        // Once we decide it's a horizontal 2-finger swipe, consume X to avoid scroll fights
+                        if (kotlin.math.abs(accumulatedDx) > 8f) {
+                            pressed.forEach { it.consumePositionChange() }
+                        }
+                        // Trigger send once when passing threshold
+                        if (!sent && kotlin.math.abs(accumulatedDx) >= swipeThresholdPx) {
+                            if (body.isNotBlank()) {
+                                onSend()
+                            }
+                            sent = true
+                        }
+                    }
+                    // End gesture when no pointers are pressed anymore
+                    if (pressedCount == 0) break
+                }
+            }
+        }
+) {
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -206,4 +269,5 @@ fun ComposeScreen(
             }
         }
     }
+}
 }
