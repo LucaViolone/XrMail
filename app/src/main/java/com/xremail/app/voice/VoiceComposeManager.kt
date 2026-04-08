@@ -11,12 +11,8 @@ import kotlinx.coroutines.flow.asStateFlow
  * 2. GeminiLiveManager generates a full draft
  * 3. TTSManager reads it back
  * 4. User confirms, edits by voice, or cancels
- *
- * Production: pipes GeminiLiveManager.commands for edit/confirm/cancel,
- * and GeminiLiveManager.spokenResponses for draft text.
  */
 class VoiceComposeManager(
-    private val geminiLive: GeminiLiveManager,
     private val ttsManager: TTSManager,
 ) {
 
@@ -34,7 +30,6 @@ class VoiceComposeManager(
             recipientName = recipientName,
             subject = subject,
         )
-        geminiLive.startListening()
     }
 
     fun onDraftGenerated(draftText: String, confidence: Float = 0.85f) {
@@ -72,17 +67,5 @@ class VoiceComposeManager(
     private fun reset() {
         _state.value = ComposeState.IDLE
         _draft.value = null
-        geminiLive.stopListening()
-    }
-
-    fun simulateDraft(recipientName: String, subject: String, draftText: String) {
-        _draft.value = VoiceDraft(
-            recipientName = recipientName,
-            subject = subject,
-            draftText = draftText,
-            isGenerating = false,
-            confidence = 0.85f,
-        )
-        _state.value = ComposeState.AWAITING_CONFIRM
     }
 }

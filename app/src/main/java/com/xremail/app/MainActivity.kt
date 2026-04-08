@@ -1,18 +1,25 @@
 package com.xremail.app
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.xr.compose.platform.LocalSession
@@ -35,16 +42,13 @@ import com.xremail.app.viewmodel.EmailViewModel
 import com.xremail.app.viewmodel.InteractionTier
 import com.xremail.app.voice.GeminiLiveManager
 import com.xremail.app.voice.TTSManager
+import com.xremail.app.voice.VoiceCommandExecutor
 import com.xremail.app.voice.VoiceComposeManager
 
 class MainActivity : ComponentActivity() {
 
-    // ---------------------------------------------------------------------------
-    // Backend wiring — swap USE_REAL_BACKEND to true once the server is running
-    // ---------------------------------------------------------------------------
-
     private val USE_REAL_BACKEND = false
-    private val BACKEND_URL = "http://10.0.2.2:8080/" // emulator → host loopback
+    private val BACKEND_URL = "http://10.0.2.2:8080/"
 
     private lateinit var tokenManager: TokenManager
     private lateinit var authRepository: AuthRepository
@@ -64,7 +68,6 @@ class MainActivity : ComponentActivity() {
             authRepository = AuthRepository(api, tokenManager)
             GmailRepository(api)
         } else {
-            // Phase 1: use mock data so the UI works without a running backend
             authRepository = AuthRepository(
                 api = NetworkClient.create(BACKEND_URL, tokenManager),
                 tokenManager = tokenManager,
@@ -80,7 +83,6 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // Handle OAuth deep-link if the activity was launched via xrmail://auth/...
         intent?.let { handleOAuthIntent(it) }
     }
 
@@ -89,13 +91,6 @@ class MainActivity : ComponentActivity() {
         handleOAuthIntent(intent)
     }
 
-    /**
-     * Processes the xrmail://auth/success or xrmail://auth/error deep link
-     * that the Ktor backend sends after the Gmail OAuth flow completes.
-     *
-     * On success: saves the JWT via [AuthRepository] and reloads emails.
-     * On error:   logs the reason (production would show a UI error state).
-     */
     private fun handleOAuthIntent(intent: Intent) {
         val uri = intent.data ?: return
         if (uri.scheme != "xrmail" || uri.host != "auth") return
@@ -134,9 +129,12 @@ private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    val ttsManager = remember { TTSManager() }
+    val ttsManager = remember { TTSManager(context) }
     val geminiLive = remember { GeminiLiveManager() }
-    val voiceCompose = remember { VoiceComposeManager(geminiLive, ttsManager) }
+    val voiceCompose = remember { VoiceComposeManager(ttsManager) }
+    val executor = remember(viewModel, ttsManager, voiceCompose, geminiLive) {
+        VoiceCommandExecutor(viewModel, ttsManager, voiceCompose, geminiLive)
+    }
 
     val faceTracker = remember { FaceAttentionTracker() }
     val handGestures = remember { SecondaryHandGestures() }
@@ -153,6 +151,48 @@ private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
 
     val xrSession = LocalSession.current
 
+    // -- Runtime permission for microphone ----------------------------------------
+
+    var hasMicPermission by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)
+                == PackageManager.PERMISSION_GRANTED
+        )
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted -> hasMicPermission = granted }
+
+    LaunchedEffect(Unit) {
+        if (!hasMicPermission) {
+            permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    // -- Gemini Live voice session ------------------------------------------------
+
+    LaunchedEffect(hasMicPermission) {
+        if (!hasMicPermission) return@LaunchedEffect
+        geminiLive.connect()
+    }
+
+    LaunchedEffect(hasMicPermission, voiceSessionState) {
+        if (!hasMicPermission) return@LaunchedEffect
+        if (voiceSessionState == GeminiLiveManager.SessionState.CONNECTED) {
+            geminiLive.startAudioCapture()
+        }
+    }
+
+    LaunchedEffect(geminiLive) {
+        geminiLive.functionCalls.collect { fc ->
+            val spokenResponse = executor.execute(fc.command)
+            geminiLive.sendToolResponse(fc.id, fc.name, spokenResponse)
+        }
+    }
+
+    // -- XR session ---------------------------------------------------------------
+
     LaunchedEffect(xrSession) {
         xrSessionManager.startAll(
             session = xrSession,
@@ -164,8 +204,12 @@ private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
     DisposableEffect(Unit) {
         onDispose {
             xrSessionManager.stopAll()
+            geminiLive.destroy()
+            ttsManager.destroy()
         }
     }
+
+    // -- Gesture wiring -----------------------------------------------------------
 
     LaunchedEffect(handGestures, gestureMapper) {
         handGestures.gestures.collect { gesture ->
@@ -189,6 +233,8 @@ private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
             }
         }
     }
+
+    // -- UI -----------------------------------------------------------------------
 
     InteractionTierRouter(
         uiState = uiState,
