@@ -1,6 +1,8 @@
 package com.xremail.app
 
+import android.content.Intent
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -8,6 +10,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.xremail.app.backend.service.AuthRepository
+import com.xremail.app.backend.service.NetworkClient
+import com.xremail.app.backend.service.TokenManager
+import com.xremail.app.backend.service.GmailRepository
+import com.xremail.app.backend.mock.MockEmailRepository
 import com.xremail.app.ui.spatial.DisplayMode
 import com.xremail.app.ui.spatial.DisplayModeRouter
 import com.xremail.app.ui.spatial.GlimmerEmailApp
@@ -16,31 +23,101 @@ import com.xremail.app.ui.theme.XREmailTheme
 import com.xremail.app.viewmodel.EmailViewModel
 
 class MainActivity : ComponentActivity() {
+
+    // ---------------------------------------------------------------------------
+    // Backend wiring — swap USE_REAL_BACKEND to true once the server is running
+    // ---------------------------------------------------------------------------
+
+    private val USE_REAL_BACKEND = false
+    private val BACKEND_URL = "http://10.0.2.2:8080/" // emulator → host loopback
+
+    private lateinit var tokenManager: TokenManager
+    private lateinit var authRepository: AuthRepository
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
+        tokenManager = TokenManager(applicationContext)
+
+        val emailRepository = if (USE_REAL_BACKEND) {
+            val api = NetworkClient.create(
+                baseUrl = BACKEND_URL,
+                tokenManager = tokenManager,
+                debug = true,
+            )
+            authRepository = AuthRepository(api, tokenManager)
+            GmailRepository(api)
+        } else {
+            // Phase 1: use mock data so the UI works without a running backend
+            authRepository = AuthRepository(
+                api = NetworkClient.create(BACKEND_URL, tokenManager),
+                tokenManager = tokenManager,
+            )
+            MockEmailRepository()
+        }
+
         setContent {
             XREmailTheme {
-                XREmailApp()
+                XREmailApp(
+                    viewModelFactory = EmailViewModel.Factory(emailRepository)
+                )
             }
         }
+
+        // Handle OAuth deep-link if the activity was launched via xrmail://auth/...
+        intent?.let { handleOAuthIntent(it) }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleOAuthIntent(intent)
+    }
+
+    /**
+     * Processes the xrmail://auth/success or xrmail://auth/error deep link
+     * that the Ktor backend sends after the Gmail OAuth flow completes.
+     *
+     * On success: saves the JWT via [AuthRepository] and reloads emails.
+     * On error:   logs the reason (production would show a UI error state).
+     */
+    private fun handleOAuthIntent(intent: Intent) {
+        val uri = intent.data ?: return
+        if (uri.scheme != "xrmail" || uri.host != "auth") return
+
+        when (uri.path) {
+            "/success" -> {
+                val state = authRepository.handleCallback(uri)
+                Log.i(TAG, "OAuth success — user: ${tokenManager.getUserEmail()}, state: $state")
+                // The ViewModel will reload emails on its next recomposition because
+                // TokenManager now returns a valid JWT, enabling real API calls.
+            }
+            "/error" -> {
+                val reason = uri.getQueryParameter("reason") ?: "unknown"
+                Log.e(TAG, "OAuth error: $reason")
+                // TODO: surface an error snackbar or re-auth prompt in the XR UI
+            }
+        }
+    }
+
+    companion object {
+        private const val TAG = "XrMailAuth"
     }
 }
 
 @Composable
-fun XREmailApp() {
+fun XREmailApp(viewModelFactory: EmailViewModel.Factory) {
     val displayMode = DisplayModeRouter.detect()
 
     when (displayMode) {
         DisplayMode.GLASSES_ADDITIVE -> GlimmerEmailApp()
-        DisplayMode.HEADSET -> HeadsetEmailApp()
+        DisplayMode.HEADSET -> HeadsetEmailApp(viewModelFactory)
     }
 }
 
 @Composable
-private fun HeadsetEmailApp() {
-    val viewModel: EmailViewModel = viewModel()
+private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
+    val viewModel: EmailViewModel = viewModel(factory = factory)
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 
     SpatialEmailLayout(

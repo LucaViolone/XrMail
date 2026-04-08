@@ -46,3 +46,17 @@ data class Attachment(
     val type: String,
     val size: String,
 )
+
+/**
+ * A composed or AI-generated email draft pending user review and send.
+ * Produced by [com.xremail.app.backend.service.EmailRepository.composeFromVoice]
+ * and displayed in the Focus layer's compose screen.
+ */
+data class EmailDraft(
+    val to: List<String>,
+    val cc: List<String> = emptyList(),
+    val subject: String,
+    val body: String,
+    val threadId: String? = null,
+    val inReplyTo: String? = null,
+)

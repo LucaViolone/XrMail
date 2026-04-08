@@ -37,6 +37,18 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+
+            <!-- OAuth 2.0 callback deep link: xrmail://auth/success and xrmail://auth/error -->
+            <!-- The Ktor backend redirects here after Gmail authorization completes.      -->
+            <!-- AuthRepository.handleCallback() extracts the JWT from the URI.           -->
+            <intent-filter android:autoVerify="false">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="xrmail"
+                    android:host="auth" />
+            </intent-filter>
         </activity>
 
         <service
