@@ -1,0 +1,41 @@
+ktor:
+  deployment:
+    port: 8080
+    host: 0.0.0.0
+  application:
+    modules:
+      - com.xremail.backend.ApplicationKt.module
+
+xrmail:
+  server:
+    # Base URL used to build OAuth redirect URIs — override in production
+    baseUrl: ${XRMAIL_BASE_URL:"http://localhost:8080"}
+
+  jwt:
+    # IMPORTANT: Replace with a strong random secret in production (use env var)
+    secret: ${JWT_SECRET:"change-me-in-production-use-env-var"}
+    issuer: ${XRMAIL_BASE_URL:"http://localhost:8080"}
+    audience: "xrmail-android-client"
+    # Token TTL: 7 days in milliseconds
+    expirationMs: 604800000
+
+  google:
+    clientId: ${GOOGLE_CLIENT_ID:""}
+    clientSecret: ${GOOGLE_CLIENT_SECRET:""}
+    # Must match the URI registered in Google Cloud Console
+    redirectUri: ${XRMAIL_BASE_URL:"http://localhost:8080"}/auth/callback
+    # Gmail scopes required by XrMail
+    scopes: "https://www.googleapis.com/auth/gmail.readonly,https://www.googleapis.com/auth/gmail.send,https://www.googleapis.com/auth/gmail.modify,https://www.googleapis.com/auth/userinfo.email,https://www.googleapis.com/auth/userinfo.profile"
+
+  whisper:
+    apiKey: ${OPENAI_API_KEY:""}
+    apiUrl: "https://api.openai.com/v1/audio/transcriptions"
+    model: "whisper-1"
+
+  gemini:
+    apiKey: ${GEMINI_API_KEY:""}
+    model: "gemini-1.5-flash"
+
+  database:
+    url: ${DB_URL:"jdbc:h2:file:./data/xrmail;DB_CLOSE_DELAY=-1"}
+    driver: "org.h2.Driver"

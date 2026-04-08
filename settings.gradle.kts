@@ -22,3 +22,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "XrMail"
 include(":app")
+include(":backend")

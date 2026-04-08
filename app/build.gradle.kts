@@ -56,6 +56,21 @@ dependencies {
 
     implementation(libs.androidx.work.runtime)
 
+    // Networking — Retrofit + OkHttp for backend communication
+    implementation(libs.retrofit.core)
+    implementation(libs.retrofit.converter.gson)
+    implementation(libs.okhttp.core)
+    implementation(libs.okhttp.logging)
+
+    // Coroutines (Android dispatcher)
+    implementation(libs.kotlinx.coroutines.android)
+
+    // Encrypted token storage (JWT persistence)
+    implementation(libs.security.crypto)
+
+    // Chrome Custom Tabs — opens OAuth flow without leaving the app
+    implementation(libs.androidx.browser)
+
     implementation(libs.androidx.xr.runtime)
     implementation(libs.androidx.xr.scenecore)
     implementation(libs.androidx.xr.compose)
