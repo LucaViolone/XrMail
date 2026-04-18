@@ -1,24 +1,33 @@
 package com.xremail.app
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.xr.compose.platform.LocalSession
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import com.xremail.app.backend.service.AuthRepository
 import com.xremail.app.backend.service.NetworkClient
 import com.xremail.app.backend.service.TokenManager
@@ -39,6 +48,7 @@ import com.xremail.app.viewmodel.EmailViewModel
 import com.xremail.app.viewmodel.InteractionTier
 import com.xremail.app.voice.GeminiLiveManager
 import com.xremail.app.voice.TTSManager
+import com.xremail.app.voice.VoiceCommandDispatcher
 import com.xremail.app.voice.VoiceComposeManager
 
 class MainActivity : ComponentActivity() {
@@ -138,9 +148,89 @@ private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    val ttsManager = remember { TTSManager() }
+    val ttsManager = remember { TTSManager(context) }
     val geminiLive = remember { GeminiLiveManager() }
     val voiceCompose = remember { VoiceComposeManager(geminiLive, ttsManager) }
+    val voiceDispatcher = remember(viewModel) {
+        VoiceCommandDispatcher(viewModel, ttsManager)
+    }
+
+    // Runtime permissions — mic for Gemini Live, XR sensors for session.configure.
+    // Missing XR perms crash OpenXrManager.configure with SecurityException.
+    val requiredPerms = remember {
+        arrayOf(
+            Manifest.permission.RECORD_AUDIO,
+            "android.permission.HAND_TRACKING",
+            "android.permission.FACE_TRACKING",
+            "android.permission.EYE_TRACKING_COARSE",
+            "android.permission.SCENE_UNDERSTANDING",
+        )
+    }
+    fun allGranted(): Boolean = requiredPerms.all {
+        ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+    }
+    var micGranted by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(
+                context, Manifest.permission.RECORD_AUDIO,
+            ) == PackageManager.PERMISSION_GRANTED
+        )
+    }
+    var xrGranted by remember { mutableStateOf(allGranted()) }
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { results ->
+        micGranted = results[Manifest.permission.RECORD_AUDIO] == true ||
+            ContextCompat.checkSelfPermission(
+                context, Manifest.permission.RECORD_AUDIO,
+            ) == PackageManager.PERMISSION_GRANTED
+        xrGranted = allGranted()
+    }
+    LaunchedEffect(Unit) {
+        if (!allGranted()) permissionLauncher.launch(requiredPerms)
+    }
+
+    // Connect / disconnect Gemini Live once the mic permission is settled.
+    LaunchedEffect(micGranted) {
+        if (micGranted) {
+            geminiLive.setContextProvider { voiceDispatcher.currentContextSummary() }
+            geminiLive.connect(scope)
+        }
+    }
+    DisposableEffect(geminiLive) {
+        onDispose { geminiLive.disconnect() }
+    }
+
+    // Route function calls the model emits into the ViewModel.
+    LaunchedEffect(geminiLive, voiceDispatcher) {
+        geminiLive.commands.collect { voiceDispatcher.dispatch(it) }
+    }
+
+    // Speak the AI summary whenever the selected email changes — the core
+    // "can I hear it?" demo path. Keeps Gemini Live as the conversational layer
+    // and uses on-device TTS for deterministic narration.
+    LaunchedEffect(Unit) {
+        viewModel.uiState
+            .map { it.selectedEmail?.id to it.selectedEmail?.aiSummary }
+            .distinctUntilChanged()
+            .collect { (_, summary) ->
+                if (!summary.isNullOrBlank()) ttsManager.speak(summary)
+            }
+    }
+
+    // Keep the model grounded in what the user is looking at.
+    LaunchedEffect(Unit) {
+        viewModel.uiState
+            .map { it.selectedEmail?.id }
+            .distinctUntilChanged()
+            .collect {
+                geminiLive.sendContextUpdate(voiceDispatcher.currentContextSummary())
+            }
+    }
+
+    DisposableEffect(ttsManager) {
+        onDispose { ttsManager.shutdown() }
+    }
 
     val faceTracker = remember { FaceAttentionTracker() }
     val handGestures = remember { SecondaryHandGestures() }
@@ -157,12 +247,18 @@ private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
 
     val xrSession = LocalSession.current
 
-    LaunchedEffect(xrSession) {
-        xrSessionManager.startAll(
-            session = xrSession,
-            contentResolver = context.contentResolver,
-            scope = scope,
-        )
+    LaunchedEffect(xrSession, xrGranted) {
+        if (xrGranted) {
+            try {
+                xrSessionManager.startAll(
+                    session = xrSession,
+                    contentResolver = context.contentResolver,
+                    scope = scope,
+                )
+            } catch (t: Throwable) {
+                Log.e("XrMail", "XR session start failed — voice will still work", t)
+            }
+        }
     }
 
     DisposableEffect(Unit) {
