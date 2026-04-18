@@ -9,9 +9,11 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import androidx.xr.compose.spatial.ContentEdge
 import androidx.xr.compose.spatial.Orbiter
@@ -80,6 +82,12 @@ fun InteractionTierRouter(
     onCancelCompose: () -> Unit,
     onDismissToast: () -> Unit,
 ) {
+    // Single shared lazy head-follow offset drives all peripheral tiers so
+    // they drift together when the user turns their head. Defaults to 0
+    // peripheral bias — the reactive delta adds onto each panel's own static
+    // offset. FOCUS tier opts out below (it has manual drag instead).
+    val lazyOffset: DpOffset by rememberLazyFollowOffset()
+
     Subspace {
         when (uiState.tier) {
             InteractionTier.AMBIENT_HUD -> {
@@ -89,7 +97,11 @@ fun InteractionTierRouter(
                     modifier = SubspaceModifier
                         .width(300.dp)
                         .height(180.dp)
-                        .offset(x = 180.dp, y = (-160).dp, z = 30.dp),
+                        .offset(
+                            x = 180.dp + lazyOffset.x,
+                            y = (-160).dp + lazyOffset.y,
+                            z = 30.dp,
+                        ),
                 ) {
                     AmbientHud(
                         unreadCount = uiState.unreadCount,
@@ -111,7 +123,11 @@ fun InteractionTierRouter(
                         modifier = SubspaceModifier
                             .width(340.dp)
                             .height(280.dp)
-                            .offset(x = 180.dp, y = (-40).dp, z = 20.dp),
+                            .offset(
+                                x = 180.dp + lazyOffset.x,
+                                y = (-40).dp + lazyOffset.y,
+                                z = 20.dp,
+                            ),
                     ) {
                         VoiceComposeOverlay(
                             draft = voiceDraft ?: uiState.voiceDraft,
@@ -129,7 +145,11 @@ fun InteractionTierRouter(
                     modifier = SubspaceModifier
                         .width(340.dp)
                         .height(520.dp)
-                        .offset(x = 140.dp, y = (-80).dp, z = 15.dp),
+                        .offset(
+                            x = 140.dp + lazyOffset.x,
+                            y = (-80).dp + lazyOffset.y,
+                            z = 15.dp,
+                        ),
                 ) {
                     NotificationCardStack(
                         emails = uiState.emails,
@@ -147,7 +167,11 @@ fun InteractionTierRouter(
                     modifier = SubspaceModifier
                         .width(200.dp)
                         .height(60.dp)
-                        .offset(x = 220.dp, y = (-200).dp, z = 30.dp),
+                        .offset(
+                            x = 220.dp + lazyOffset.x,
+                            y = (-200).dp + lazyOffset.y,
+                            z = 30.dp,
+                        ),
                 ) {
                     MinimalStatusBar(
                         ttsState = ttsState,
@@ -158,11 +182,14 @@ fun InteractionTierRouter(
             }
 
             InteractionTier.TRIAGE -> {
-                // Content plane: centered for focused triage interaction
+                // Content plane: centered for focused triage interaction,
+                // softly drifts with head yaw so it's easy to glance away
+                // and come back without re-centering manually.
                 SpatialPanel(
                     modifier = SubspaceModifier
                         .width(420.dp)
-                        .height(760.dp),
+                        .height(760.dp)
+                        .offset(x = lazyOffset.x, y = lazyOffset.y),
                 ) {
                     Surface(color = XREmailColors.surface) {
                         TriagePanel(
@@ -196,7 +223,11 @@ fun InteractionTierRouter(
                         modifier = SubspaceModifier
                             .width(380.dp)
                             .height(300.dp)
-                            .offset(x = 240.dp, z = 10.dp),
+                            .offset(
+                                x = 240.dp + lazyOffset.x,
+                                y = lazyOffset.y,
+                                z = 10.dp,
+                            ),
                     ) {
                         VoiceComposeOverlay(
                             draft = voiceDraft ?: uiState.voiceDraft,

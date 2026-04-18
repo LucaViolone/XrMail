@@ -112,12 +112,14 @@ class SecondaryHandGestures {
         if (isPinching && !pinchEmitted) {
             val holdDuration = now - pinchStartTimeMs
             if (holdDuration >= PINCH_HOLD_DURATION_MS) {
+                Log.d(TAG, "emit ${Gesture.PINCH_HOLD_EXPAND}")
                 _gestures.tryEmit(Gesture.PINCH_HOLD_EXPAND)
                 pinchEmitted = true
             }
         }
 
         if (!isPinching && wasPinching && !pinchEmitted) {
+            Log.d(TAG, "emit ${Gesture.PINCH_SELECT}")
             _gestures.tryEmit(Gesture.PINCH_SELECT)
         }
     }
@@ -147,8 +149,10 @@ class SecondaryHandGestures {
         if (absDx > SWIPE_DISTANCE_THRESHOLD && absDx > absDy * 1.5f) {
             if (kotlin.math.abs(vx) > SWIPE_VELOCITY_THRESHOLD) {
                 if (vx > 0) {
+                    Log.d(TAG, "emit ${Gesture.SWIPE_RIGHT_SNOOZE}")
                     _gestures.tryEmit(Gesture.SWIPE_RIGHT_SNOOZE)
                 } else {
+                    Log.d(TAG, "emit ${Gesture.SWIPE_LEFT_ARCHIVE}")
                     _gestures.tryEmit(Gesture.SWIPE_LEFT_ARCHIVE)
                 }
                 palmPositionHistory.clear()
@@ -156,8 +160,10 @@ class SecondaryHandGestures {
         } else if (absDy > SWIPE_DISTANCE_THRESHOLD && absDy > absDx * 1.5f) {
             if (kotlin.math.abs(vy) > SWIPE_VELOCITY_THRESHOLD) {
                 if (vy > 0) {
+                    Log.d(TAG, "emit ${Gesture.SWIPE_UP_STAR}")
                     _gestures.tryEmit(Gesture.SWIPE_UP_STAR)
                 } else {
+                    Log.d(TAG, "emit ${Gesture.SWIPE_DOWN_DISMISS}")
                     _gestures.tryEmit(Gesture.SWIPE_DOWN_DISMISS)
                 }
                 palmPositionHistory.clear()
