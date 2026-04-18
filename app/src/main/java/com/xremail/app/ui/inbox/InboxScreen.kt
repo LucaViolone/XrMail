@@ -40,52 +40,66 @@ fun InboxScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(XREmailColors.surface)
-            .padding(16.dp),
+            .background(XREmailColors.surface),
     ) {
-        Text(
-            text = "Inbox",
-            style = MaterialTheme.typography.headlineMedium,
-            color = XREmailColors.onSurface,
-        )
-
-        Spacer(Modifier.height(12.dp))
-
-        CategoryChips(
-            activeCategory = activeCategory,
-            onCategorySelected = onCategorySelected,
-        )
-
-        Spacer(Modifier.height(12.dp))
-
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(
-                    XREmailColors.surfaceVariant,
-                    RoundedCornerShape(24.dp),
-                )
-                .padding(horizontal = 16.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
+        Column(
+            modifier = Modifier.padding(horizontal = 24.dp, vertical = 24.dp),
         ) {
-            Icon(
-                Icons.Default.Search,
-                contentDescription = "Search",
-                tint = XREmailColors.onSurfaceDim,
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.Bottom,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    text = "Inbox",
+                    style = MaterialTheme.typography.headlineMedium,
+                    color = XREmailColors.onSurfaceStrong,
+                )
+                val unread = emails.count { !it.isRead }
+                if (unread > 0) {
+                    Text(
+                        text = "$unread unread",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = XREmailColors.onSurfaceDim,
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(16.dp))
+
+            CategoryChips(
+                activeCategory = activeCategory,
+                onCategorySelected = onCategorySelected,
             )
-            Text(
-                text = "Search emails...",
-                style = MaterialTheme.typography.bodyMedium,
-                color = XREmailColors.onSurfaceDim,
-                modifier = Modifier.padding(start = 8.dp),
-            )
+
+            Spacer(Modifier.height(12.dp))
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(
+                        XREmailColors.surfaceVariant.copy(alpha = 0.6f),
+                        RoundedCornerShape(22.dp),
+                    )
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    Icons.Default.Search,
+                    contentDescription = "Search",
+                    tint = XREmailColors.onSurfaceDim,
+                )
+                Text(
+                    text = "Search",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = XREmailColors.onSurfaceDim,
+                    modifier = Modifier.padding(start = 10.dp),
+                )
+            }
         }
 
-        Spacer(Modifier.height(12.dp))
-
         LazyColumn(
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-            contentPadding = PaddingValues(bottom = 16.dp),
+            contentPadding = PaddingValues(bottom = 24.dp),
         ) {
             items(emails, key = { it.id }) { email ->
                 EmailCard(
@@ -125,12 +139,12 @@ private fun CategoryChips(
                     )
                 },
                 colors = FilterChipDefaults.filterChipColors(
-                    containerColor = XREmailColors.surfaceVariant,
-                    selectedContainerColor = XREmailColors.primary.copy(alpha = 0.2f),
-                    labelColor = XREmailColors.onSurfaceVariant,
+                    containerColor = XREmailColors.surfaceVariant.copy(alpha = 0.5f),
+                    selectedContainerColor = XREmailColors.primary.copy(alpha = 0.14f),
+                    labelColor = XREmailColors.onSurfaceDim,
                     selectedLabelColor = XREmailColors.primary,
                 ),
-                shape = RoundedCornerShape(24.dp),
+                shape = RoundedCornerShape(22.dp),
             )
         }
     }

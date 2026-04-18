@@ -10,6 +10,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -18,6 +20,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -37,6 +40,7 @@ import com.xremail.app.tracking.TiltScrollController
 import com.xremail.app.tracking.XrSessionManager
 import com.xremail.app.ui.spatial.DisplayMode
 import com.xremail.app.ui.spatial.DisplayModeRouter
+import com.xremail.app.ui.feedback.GestureFeedbackOverlay
 import com.xremail.app.ui.spatial.GlimmerEmailApp
 import com.xremail.app.ui.spatial.InteractionTierRouter
 import com.xremail.app.ui.theme.XREmailTheme
@@ -286,33 +290,37 @@ private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
         }
     }
 
-    InteractionTierRouter(
-        uiState = uiState,
-        prioritySortedEmails = viewModel.prioritySortedEmails(),
-        ttsState = ttsState,
-        ttsProgress = ttsProgress,
-        tiltScrollDelta = tiltScrollDelta,
-        voiceSessionState = voiceSessionState,
-        voiceComposeState = voiceComposeState,
-        voiceDraft = voiceDraft,
-        onExpandToNotifications = viewModel::expandToNotificationCards,
-        onCollapseFromNotifications = viewModel::collapseFromNotificationCards,
-        onExpandToTriage = viewModel::expandToTriage,
-        onCollapseToHud = viewModel::collapseToHud,
-        onExpandToFocus = viewModel::expandToFocus,
-        onCollapseToTriage = viewModel::collapseToTriage,
-        onEmailSelected = viewModel::selectEmail,
-        onOpenFromNotification = viewModel::openFromNotification,
-        onCategorySelected = viewModel::filterByCategory,
-        onToggleAiSummary = viewModel::toggleAiSummary,
-        onReply = viewModel::startCompose,
-        onArchive = viewModel::archiveSelected,
-        onArchiveEmail = viewModel::archiveEmail,
-        onSnooze = viewModel::snoozeSelected,
-        onSnoozeEmail = viewModel::snoozeEmail,
-        onForward = viewModel::forwardSelected,
-        onSend = viewModel::sendDraft,
-        onCancelCompose = viewModel::cancelCompose,
-        onDismissToast = viewModel::dismissToast,
-    )
+    Box(modifier = Modifier.fillMaxSize()) {
+        InteractionTierRouter(
+            uiState = uiState,
+            prioritySortedEmails = viewModel.prioritySortedEmails(),
+            ttsState = ttsState,
+            ttsProgress = ttsProgress,
+            tiltScrollDelta = tiltScrollDelta,
+            voiceSessionState = voiceSessionState,
+            voiceComposeState = voiceComposeState,
+            voiceDraft = voiceDraft,
+            onExpandToNotifications = viewModel::expandToNotificationCards,
+            onCollapseFromNotifications = viewModel::collapseFromNotificationCards,
+            onExpandToTriage = viewModel::expandToTriage,
+            onCollapseToHud = viewModel::collapseToHud,
+            onExpandToFocus = viewModel::expandToFocus,
+            onCollapseToTriage = viewModel::collapseToTriage,
+            onEmailSelected = viewModel::selectEmail,
+            onOpenFromNotification = viewModel::openFromNotification,
+            onCategorySelected = viewModel::filterByCategory,
+            onToggleAiSummary = viewModel::toggleAiSummary,
+            onReply = viewModel::startCompose,
+            onArchive = viewModel::archiveSelected,
+            onArchiveEmail = viewModel::archiveEmail,
+            onSnooze = viewModel::snoozeSelected,
+            onSnoozeEmail = viewModel::snoozeEmail,
+            onForward = viewModel::forwardSelected,
+            onSend = viewModel::sendDraft,
+            onCancelCompose = viewModel::cancelCompose,
+            onDismissToast = viewModel::dismissToast,
+        )
+
+        GestureFeedbackOverlay(gestures = handGestures.gestures)
+    }
 }

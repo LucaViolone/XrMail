@@ -1,7 +1,10 @@
 package com.xremail.app.tracking
 
+import android.util.Log
 import com.xremail.app.viewmodel.EmailViewModel
 import com.xremail.app.viewmodel.InteractionTier
+
+private const val TAG = "GestureMapper"
 
 /**
  * Context-aware gesture-to-action mapper. Routes the same physical gesture
@@ -21,6 +24,7 @@ class GestureToActionMapper(
 ) {
 
     fun onGesture(gesture: SecondaryHandGestures.Gesture, tier: InteractionTier) {
+        Log.d(TAG, "gesture=$gesture tier=$tier")
         when (tier) {
             InteractionTier.AMBIENT_HUD -> handleAmbientGesture(gesture)
             InteractionTier.NOTIFICATION_CARDS -> handleNotificationCardsGesture(gesture)
@@ -31,7 +35,10 @@ class GestureToActionMapper(
 
     private fun handleAmbientGesture(gesture: SecondaryHandGestures.Gesture) {
         when (gesture) {
-            SecondaryHandGestures.Gesture.PINCH_SELECT -> viewModel.expandToNotificationCards()
+            SecondaryHandGestures.Gesture.PINCH_SELECT -> {
+                Log.d(TAG, "  -> expandToNotificationCards()")
+                viewModel.expandToNotificationCards()
+            }
             else -> { /* no-op in ambient — gaze handles expansion */ }
         }
     }
@@ -42,53 +49,91 @@ class GestureToActionMapper(
                 val highlighted = viewModel.uiState.value.highlightedNotificationId
                 val email = viewModel.uiState.value.emails.find { it.id == highlighted }
                 if (email != null) {
+                    Log.d(TAG, "  -> openFromNotification(${email.id})")
                     viewModel.openFromNotification(email)
                 } else {
+                    Log.d(TAG, "  -> expandToTriage()")
                     viewModel.expandToTriage()
                 }
             }
             SecondaryHandGestures.Gesture.SWIPE_LEFT_ARCHIVE -> {
                 val highlighted = viewModel.uiState.value.highlightedNotificationId
                 val email = viewModel.uiState.value.emails.find { it.id == highlighted }
-                if (email != null) viewModel.archiveEmail(email)
+                if (email != null) {
+                    Log.d(TAG, "  -> archiveEmail(${email.id})")
+                    viewModel.archiveEmail(email)
+                }
             }
             SecondaryHandGestures.Gesture.SWIPE_RIGHT_SNOOZE -> {
                 val highlighted = viewModel.uiState.value.highlightedNotificationId
                 val email = viewModel.uiState.value.emails.find { it.id == highlighted }
-                if (email != null) viewModel.snoozeEmail(email)
+                if (email != null) {
+                    Log.d(TAG, "  -> snoozeEmail(${email.id})")
+                    viewModel.snoozeEmail(email)
+                }
             }
             SecondaryHandGestures.Gesture.SWIPE_DOWN_DISMISS -> {
+                Log.d(TAG, "  -> collapseFromNotificationCards()")
                 viewModel.collapseFromNotificationCards()
             }
             SecondaryHandGestures.Gesture.PINCH_HOLD_EXPAND -> {
+                Log.d(TAG, "  -> expandToTriage()")
                 viewModel.expandToTriage()
             }
             SecondaryHandGestures.Gesture.SWIPE_UP_STAR -> {
                 val highlighted = viewModel.uiState.value.highlightedNotificationId
                 val email = viewModel.uiState.value.emails.find { it.id == highlighted }
-                if (email != null) viewModel.toggleStar(email)
+                if (email != null) {
+                    Log.d(TAG, "  -> toggleStar(${email.id})")
+                    viewModel.toggleStar(email)
+                }
             }
         }
     }
 
     private fun handleTriageGesture(gesture: SecondaryHandGestures.Gesture) {
         when (gesture) {
-            SecondaryHandGestures.Gesture.SWIPE_LEFT_ARCHIVE -> viewModel.archiveSelected()
-            SecondaryHandGestures.Gesture.SWIPE_RIGHT_SNOOZE -> viewModel.snoozeSelected()
-            SecondaryHandGestures.Gesture.PINCH_SELECT -> {
-                viewModel.uiState.value.selectedEmail?.let { viewModel.selectEmail(it) }
+            SecondaryHandGestures.Gesture.SWIPE_LEFT_ARCHIVE -> {
+                Log.d(TAG, "  -> archiveSelected()")
+                viewModel.archiveSelected()
             }
-            SecondaryHandGestures.Gesture.PINCH_HOLD_EXPAND -> viewModel.expandToFocus()
-            SecondaryHandGestures.Gesture.SWIPE_DOWN_DISMISS -> viewModel.collapseToHud()
+            SecondaryHandGestures.Gesture.SWIPE_RIGHT_SNOOZE -> {
+                Log.d(TAG, "  -> snoozeSelected()")
+                viewModel.snoozeSelected()
+            }
+            SecondaryHandGestures.Gesture.PINCH_SELECT -> {
+                viewModel.uiState.value.selectedEmail?.let {
+                    Log.d(TAG, "  -> selectEmail(${it.id})")
+                    viewModel.selectEmail(it)
+                }
+            }
+            SecondaryHandGestures.Gesture.PINCH_HOLD_EXPAND -> {
+                Log.d(TAG, "  -> expandToFocus()")
+                viewModel.expandToFocus()
+            }
+            SecondaryHandGestures.Gesture.SWIPE_DOWN_DISMISS -> {
+                Log.d(TAG, "  -> collapseToHud()")
+                viewModel.collapseToHud()
+            }
             SecondaryHandGestures.Gesture.SWIPE_UP_STAR -> {
-                viewModel.uiState.value.selectedEmail?.let { viewModel.toggleStar(it) }
+                viewModel.uiState.value.selectedEmail?.let {
+                    Log.d(TAG, "  -> toggleStar(${it.id})")
+                    viewModel.toggleStar(it)
+                }
             }
         }
     }
 
     private fun handleFocusGesture(gesture: SecondaryHandGestures.Gesture) {
         when (gesture) {
-            SecondaryHandGestures.Gesture.SWIPE_DOWN_DISMISS -> viewModel.collapseToTriage()
+            SecondaryHandGestures.Gesture.SWIPE_DOWN_DISMISS -> {
+                Log.d(TAG, "  -> collapseToTriage()")
+                viewModel.collapseToTriage()
+            }
+            SecondaryHandGestures.Gesture.PINCH_HOLD_EXPAND -> {
+                Log.d(TAG, "  -> collapseToTriage() (pinch-hold escape)")
+                viewModel.collapseToTriage()
+            }
             SecondaryHandGestures.Gesture.PINCH_SELECT -> {
                 /* standard select — handled by existing panel tap */
             }

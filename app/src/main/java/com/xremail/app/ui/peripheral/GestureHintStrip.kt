@@ -26,33 +26,43 @@ import kotlinx.coroutines.delay
 @Composable
 fun GestureHintStrip(
     modifier: Modifier = Modifier,
+    autoHide: Boolean = true,
 ) {
-    var visible by remember { mutableStateOf(true) }
+    if (autoHide) {
+        var visible by remember { mutableStateOf(true) }
 
-    LaunchedEffect(Unit) {
-        delay(5000)
-        visible = false
-    }
-
-    AnimatedVisibility(
-        visible = visible,
-        enter = fadeIn(),
-        exit = fadeOut(),
-        modifier = modifier,
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(12.dp))
-                .background(XREmailColors.surfaceElevated.copy(alpha = 0.8f))
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.SpaceEvenly,
-        ) {
-            HintItem("→ archive")
-            HintItem("← snooze")
-            HintItem("↑ star")
-            HintItem("pinch read")
+        LaunchedEffect(Unit) {
+            delay(5000)
+            visible = false
         }
+
+        AnimatedVisibility(
+            visible = visible,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = modifier,
+        ) {
+            HintRow()
+        }
+    } else {
+        HintRow(modifier = modifier)
+    }
+}
+
+@Composable
+private fun HintRow(modifier: Modifier = Modifier) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(XREmailColors.surfaceElevated.copy(alpha = 0.8f))
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.SpaceEvenly,
+    ) {
+        HintItem("\u2192 archive")
+        HintItem("\u2190 snooze")
+        HintItem("\u2191 star")
+        HintItem("pinch read")
     }
 }
 
