@@ -1,19 +1,30 @@
 package com.xremail.app.ui.spatial
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import androidx.xr.compose.spatial.ContentEdge
 import androidx.xr.compose.spatial.Orbiter
-import androidx.xr.compose.spatial.Subspace
 import androidx.xr.compose.subspace.MovePolicy
 import androidx.xr.compose.subspace.ResizePolicy
 import androidx.xr.compose.subspace.SpatialCurvedRow
@@ -51,6 +62,7 @@ fun SpatialEmailLayout(
     onSend: () -> Unit,
     onCancelCompose: () -> Unit,
     onCollapse: (() -> Unit)? = null,
+    onGestureOverlay: @Composable () -> Unit = {},
 ) {
     SpatialCurvedRow(
         curveRadius = 825.dp,
@@ -79,29 +91,6 @@ fun SpatialEmailLayout(
             ) {
                 NotificationPill(unreadCount = unreadCount)
             }
-
-            if (onCollapse != null) {
-                Orbiter(
-                    position = ContentEdge.Top,
-                    offset = 48.dp,
-                    alignment = Alignment.Start,
-                ) {
-                    FilledIconButton(
-                        onClick = onCollapse,
-                        colors = IconButtonDefaults.filledIconButtonColors(
-                            containerColor = XREmailColors.surfaceElevated,
-                            contentColor = XREmailColors.onSurfaceVariant,
-                        ),
-                        modifier = Modifier.size(36.dp),
-                    ) {
-                        Icon(
-                            Icons.Default.KeyboardArrowDown,
-                            contentDescription = "Collapse to Triage",
-                            modifier = Modifier.size(20.dp),
-                        )
-                    }
-                }
-            }
         }
 
         SpatialPanel(
@@ -112,17 +101,28 @@ fun SpatialEmailLayout(
             resizePolicy = ResizePolicy(),
         ) {
             Surface(color = XREmailColors.surface) {
-                when (mode) {
-                    AppMode.READING -> EmailReaderScreen(
-                        email = selectedEmail,
-                        isAiSummaryExpanded = isAiSummaryExpanded,
-                        onToggleAiSummary = onToggleAiSummary,
-                    )
-                    AppMode.COMPOSING -> ComposeScreen(
-                        replyTo = selectedEmail,
-                        onSend = onSend,
-                        onCancel = onCancelCompose,
-                    )
+                Box(modifier = Modifier.fillMaxSize()) {
+                    when (mode) {
+                        AppMode.READING -> EmailReaderScreen(
+                            email = selectedEmail,
+                            isAiSummaryExpanded = isAiSummaryExpanded,
+                            onToggleAiSummary = onToggleAiSummary,
+                        )
+                        AppMode.COMPOSING -> ComposeScreen(
+                            replyTo = selectedEmail,
+                            onSend = onSend,
+                            onCancel = onCancelCompose,
+                        )
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(top = 40.dp),
+                        contentAlignment = Alignment.TopCenter,
+                    ) {
+                        onGestureOverlay()
+                    }
                 }
             }
 
@@ -137,6 +137,16 @@ fun SpatialEmailLayout(
                     onSnooze = onSnooze,
                     onForward = onForward,
                 )
+            }
+
+            if (onCollapse != null) {
+                Orbiter(
+                    position = ContentEdge.Top,
+                    offset = 48.dp,
+                    alignment = Alignment.End,
+                ) {
+                    CollapsePill(onClick = onCollapse)
+                }
             }
         }
 
@@ -156,5 +166,32 @@ fun SpatialEmailLayout(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun CollapsePill(onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .defaultMinSize(minHeight = 52.dp)
+            .clip(RoundedCornerShape(999.dp))
+            .background(XREmailColors.surfaceElevated)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 18.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center,
+    ) {
+        Icon(
+            imageVector = Icons.Default.KeyboardArrowDown,
+            contentDescription = "Collapse to Triage",
+            tint = XREmailColors.onSurfaceVariant,
+            modifier = Modifier.size(18.dp),
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(
+            text = "Collapse",
+            style = MaterialTheme.typography.labelMedium,
+            color = XREmailColors.onSurfaceVariant,
+        )
     }
 }

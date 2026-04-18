@@ -103,19 +103,35 @@ class VoiceCommandDispatcher(
     }
 
     /**
-     * Generates a short context string to send back to Gemini Live so it knows
-     * the current inbox focus without relying on stale turn history.
+     * Generates a context block sent back to Gemini Live so it can reason about
+     * the inbox without waiting on another tool call. Includes the top 5 unread
+     * emails (sender, subject, priority) so the model can answer questions like
+     * "what's urgent?" or "anything from Sarah?" purely from context.
      */
     fun currentContextSummary(): String {
         val state = viewModel.uiState.value
         val sel = state.selectedEmail
+        val unreadTop = state.emails
+            .asSequence()
+            .filter { !it.isRead }
+            .sortedByDescending { it.priority.ordinal }
+            .take(5)
+            .toList()
+
         return buildString {
-            append("Tier=${state.tier.name}. ")
-            append("InboxCount=${state.emails.size}. ")
+            append("tier=${state.tier.name}; ")
+            append("total=${state.emails.size}; ")
+            append("unread=${state.emails.count { !it.isRead }}")
             if (sel != null) {
-                append("Selected: id=${sel.id}, from=${sel.sender}, subject=\"${sel.subject}\".")
+                append("\nselected: id=${sel.id}, from=${sel.sender}, subject=\"${sel.subject}\", priority=${sel.priority.name}")
             } else {
-                append("No email selected.")
+                append("\nselected: none")
+            }
+            if (unreadTop.isNotEmpty()) {
+                append("\ntop unread:")
+                unreadTop.forEach { e ->
+                    append("\n  - id=${e.id}, from=${e.sender}, subject=\"${e.subject}\", priority=${e.priority.name}")
+                }
             }
         }
     }
