@@ -1,340 +1,233 @@
 package com.xremail.app.voice
 
-import android.annotation.SuppressLint
-import android.media.AudioAttributes
-import android.media.AudioFormat
-import android.media.AudioRecord
-import android.media.AudioTrack
-import android.media.MediaRecorder
-import android.util.Base64
 import android.util.Log
-import com.google.gson.Gson
-import com.google.gson.JsonObject
-import com.google.gson.JsonParser
-import com.xremail.app.BuildConfig
+import com.google.firebase.Firebase
+import com.google.firebase.ai.ai
+import com.google.firebase.ai.type.FunctionCallPart
+import com.google.firebase.ai.type.FunctionResponsePart
+import com.google.firebase.ai.type.GenerativeBackend
+import com.google.firebase.ai.type.LiveGenerationConfig
+import com.google.firebase.ai.type.LiveSession
+import com.google.firebase.ai.type.PublicPreviewAPI
+import com.google.firebase.ai.type.ResponseModality
+import com.google.firebase.ai.type.content
+import com.google.firebase.ai.type.liveGenerationConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.Response
-import okhttp3.WebSocket
-import okhttp3.WebSocketListener
-import java.util.concurrent.TimeUnit
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 
 /**
- * Manages a bidirectional Gemini Live API session over a raw OkHttp WebSocket.
+ * Live bidirectional audio session with Gemini.
  *
- * Handles:
- * - WebSocket lifecycle (connect / disconnect)
- * - Microphone capture (16kHz 16-bit PCM) streamed as base64
- * - Audio playback of Gemini responses (24kHz 16-bit PCM)
- * - Function call parsing and tool response sending
+ * Backed by Firebase AI Logic's [com.google.firebase.ai.LiveGenerativeModel].
+ * - Model: gemini-2.5-flash native-audio preview — speaks in a natural voice.
+ * - Mic + speaker are managed by the SDK via startAudioConversation.
+ * - Function calls from the model are routed through [EmailCommandTool.parse]
+ *   and emitted on [commands] for [VoiceCommandDispatcher] to execute.
+ *
+ * Lifecycle:
+ *   connect(scope)   → establishes WebSocket, registers tools + system prompt
+ *   startListening() → unmutes mic (model starts hearing the user)
+ *   stopListening()  → mutes mic
+ *   disconnect()     → closes the session
  */
+@OptIn(PublicPreviewAPI::class)
 class GeminiLiveManager {
 
     enum class SessionState { DISCONNECTED, CONNECTING, CONNECTED, LISTENING, ERROR }
 
-    data class FunctionCall(
-        val id: String,
-        val name: String,
-        val command: EmailCommandTool.Command,
-    )
-
     private val _state = MutableStateFlow(SessionState.DISCONNECTED)
     val state: StateFlow<SessionState> = _state.asStateFlow()
 
-    private val _functionCalls = MutableSharedFlow<FunctionCall>(extraBufferCapacity = 16)
-    val functionCalls: SharedFlow<FunctionCall> = _functionCalls.asSharedFlow()
+    private val _commands = MutableSharedFlow<EmailCommandTool.Command>(extraBufferCapacity = 16)
+    val commands: SharedFlow<EmailCommandTool.Command> = _commands.asSharedFlow()
 
-    private var webSocket: WebSocket? = null
-    private var audioRecord: AudioRecord? = null
-    private var audioTrack: AudioTrack? = null
-    private var captureJob: Job? = null
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val gson = Gson()
+    /** Text transcripts of model-spoken responses, for captions / logging. */
+    private val _spokenResponses = MutableSharedFlow<String>(extraBufferCapacity = 16)
+    val spokenResponses: SharedFlow<String> = _spokenResponses.asSharedFlow()
 
-    private val client = OkHttpClient.Builder()
-        .readTimeout(0, TimeUnit.MILLISECONDS)
-        .build()
+    private var session: LiveSession? = null
+    private var sessionJob: Job? = null
+    private var managedScope: CoroutineScope? = null
+    private var contextProvider: () -> String = { "" }
 
-    companion object {
-        private const val TAG = "GeminiLive"
-        private const val MODEL = "models/gemini-2.5-flash-native-audio-preview-12-2025"
-        private const val CAPTURE_SAMPLE_RATE = 16000
-        private const val PLAYBACK_SAMPLE_RATE = 24000
-        private const val CHUNK_DURATION_MS = 250
-        private val WS_URL = "wss://generativelanguage.googleapis.com/ws/" +
-            "google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent" +
-            "?key=${BuildConfig.GEMINI_API_KEY}"
+    /** Last error message — surface in UI so failures are visible, not silent. */
+    private val _lastError = MutableStateFlow<String?>(null)
+    val lastError: StateFlow<String?> = _lastError.asStateFlow()
+
+    /**
+     * Register a callback that returns a short text block describing the
+     * currently visible UI state (selected email id, inbox focus, etc).
+     * Injected into system prompt on every turn so the model has fresh grounding.
+     */
+    fun setContextProvider(provider: () -> String) {
+        contextProvider = provider
     }
 
-    // -- Public API ---------------------------------------------------------------
-
-    fun connect() {
-        if (_state.value != SessionState.DISCONNECTED) return
+    suspend fun connect(scope: CoroutineScope) {
+        if (_state.value == SessionState.CONNECTING ||
+            _state.value == SessionState.CONNECTED ||
+            _state.value == SessionState.LISTENING
+        ) {
+            Log.i(TAG, "connect() skipped — already in state=${_state.value}")
+            return
+        }
         _state.value = SessionState.CONNECTING
+        _lastError.value = null
+        managedScope = scope
+        Log.i(TAG, "Gemini Live connecting (model=$MODEL)…")
 
-        val request = Request.Builder().url(WS_URL).build()
-        webSocket = client.newWebSocket(request, Listener())
-    }
+        try {
+            val model = Firebase.ai(backend = GenerativeBackend.googleAI()).liveModel(
+                modelName = MODEL,
+                generationConfig = liveGenerationConfig {
+                    responseModality = ResponseModality.AUDIO
+                },
+                systemInstruction = content {
+                    text(SYSTEM_PROMPT)
+                },
+                tools = listOf(EmailCommandTool.tool),
+            )
 
-    @SuppressLint("MissingPermission")
-    fun startAudioCapture() {
-        if (_state.value != SessionState.CONNECTED && _state.value != SessionState.LISTENING) return
-        _state.value = SessionState.LISTENING
+            val live = model.connect()
+            session = live
 
-        val bufferSize = AudioRecord.getMinBufferSize(
-            CAPTURE_SAMPLE_RATE,
-            AudioFormat.CHANNEL_IN_MONO,
-            AudioFormat.ENCODING_PCM_16BIT,
-        ).coerceAtLeast(CAPTURE_SAMPLE_RATE * 2 * CHUNK_DURATION_MS / 1000)
-
-        val recorder = AudioRecord(
-            MediaRecorder.AudioSource.MIC,
-            CAPTURE_SAMPLE_RATE,
-            AudioFormat.CHANNEL_IN_MONO,
-            AudioFormat.ENCODING_PCM_16BIT,
-            bufferSize,
-        )
-        audioRecord = recorder
-        recorder.startRecording()
-
-        val chunkBytes = CAPTURE_SAMPLE_RATE * 2 * CHUNK_DURATION_MS / 1000
-        val buffer = ByteArray(chunkBytes)
-
-        captureJob = scope.launch {
-            while (isActive && recorder.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
-                val read = recorder.read(buffer, 0, buffer.size)
-                if (read > 0) {
-                    val b64 = Base64.encodeToString(buffer, 0, read, Base64.NO_WRAP)
-                    val msg = JsonObject().apply {
-                        add("realtimeInput", JsonObject().apply {
-                            add("audio", JsonObject().apply {
-                                addProperty("data", b64)
-                                addProperty("mimeType", "audio/pcm;rate=$CAPTURE_SAMPLE_RATE")
-                            })
-                        })
+            sessionJob = scope.launch(Dispatchers.Default) {
+                try {
+                    live.startAudioConversation { call: FunctionCallPart ->
+                        Log.i(TAG, "function call: ${call.name} args=${call.args}")
+                        handleFunctionCall(call)
                     }
-                    webSocket?.send(gson.toJson(msg))
+                } catch (t: Throwable) {
+                    Log.e(TAG, "Audio conversation failed", t)
+                    _lastError.value = t.message ?: t::class.simpleName ?: "audio error"
+                    _state.value = SessionState.ERROR
                 }
             }
+
+            _state.value = SessionState.LISTENING
+            Log.i(TAG, "Gemini Live connected and listening (model=$MODEL)")
+        } catch (t: Throwable) {
+            Log.e(TAG, "Gemini Live connect failed", t)
+            _lastError.value = t.message ?: t::class.simpleName ?: "connect error"
+            _state.value = SessionState.ERROR
+            session = null
         }
     }
 
-    fun stopAudioCapture() {
-        captureJob?.cancel()
-        captureJob = null
-        audioRecord?.stop()
-        audioRecord?.release()
-        audioRecord = null
+    fun startListening() {
+        if (_state.value == SessionState.CONNECTED) {
+            _state.value = SessionState.LISTENING
+        }
+    }
+
+    fun stopListening() {
         if (_state.value == SessionState.LISTENING) {
             _state.value = SessionState.CONNECTED
         }
     }
 
-    fun sendToolResponse(callId: String, name: String, result: String?) {
-        val response = JsonObject().apply {
-            add("toolResponse", JsonObject().apply {
-                add("functionResponses", com.google.gson.JsonArray().apply {
-                    add(JsonObject().apply {
-                        addProperty("id", callId)
-                        addProperty("name", name)
-                        add("response", JsonObject().apply {
-                            addProperty("result", result ?: "Done")
-                        })
-                    })
-                })
-            })
-        }
-        webSocket?.send(gson.toJson(response))
-    }
-
     fun disconnect() {
-        stopAudioCapture()
-        audioTrack?.stop()
-        audioTrack?.release()
-        audioTrack = null
-        webSocket?.close(1000, "Client disconnect")
-        webSocket = null
+        val live = session
+        session = null
+        val scope = managedScope
+        sessionJob?.cancel()
+        sessionJob = null
         _state.value = SessionState.DISCONNECTED
-    }
-
-    fun destroy() {
-        disconnect()
-        scope.cancel()
-    }
-
-    // -- WebSocket listener -------------------------------------------------------
-
-    private inner class Listener : WebSocketListener() {
-
-        override fun onOpen(webSocket: WebSocket, response: Response) {
-            Log.i(TAG, "WebSocket connected")
-            sendSetupMessage(webSocket)
-            _state.value = SessionState.CONNECTED
-        }
-
-        override fun onMessage(webSocket: WebSocket, text: String) {
-            try {
-                val json = JsonParser.parseString(text).asJsonObject
-                handleServerMessage(json)
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to parse message", e)
-            }
-        }
-
-        override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-            Log.e(TAG, "WebSocket failure: ${t.message}", t)
-            _state.value = SessionState.ERROR
-        }
-
-        override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-            Log.i(TAG, "WebSocket closing: $code $reason")
-            webSocket.close(code, reason)
-            _state.value = SessionState.DISCONNECTED
-        }
-
-        override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-            Log.i(TAG, "WebSocket closed: $code $reason")
-            _state.value = SessionState.DISCONNECTED
-        }
-    }
-
-    // -- Setup message ------------------------------------------------------------
-
-    private fun sendSetupMessage(ws: WebSocket) {
-        val setup = JsonObject().apply {
-            add("setup", JsonObject().apply {
-                addProperty("model", MODEL)
-                add("generationConfig", JsonObject().apply {
-                    add("responseModalities", com.google.gson.JsonArray().apply {
-                        add("AUDIO")
-                    })
-                    add("speechConfig", JsonObject().apply {
-                        add("voiceConfig", JsonObject().apply {
-                            add("prebuiltVoiceConfig", JsonObject().apply {
-                                addProperty("voiceName", "Aoede")
-                            })
-                        })
-                    })
-                })
-                add("systemInstruction", JsonObject().apply {
-                    add("parts", com.google.gson.JsonArray().apply {
-                        add(JsonObject().apply {
-                            addProperty("text", SYSTEM_INSTRUCTION)
-                        })
-                    })
-                })
-                add("tools", EmailCommandTool.toolDeclarationsJson())
-            })
-        }
-        ws.send(gson.toJson(setup))
-        Log.i(TAG, "Setup message sent")
-    }
-
-    // -- Incoming message handling -------------------------------------------------
-
-    private fun handleServerMessage(json: JsonObject) {
-        if (json.has("setupComplete")) {
-            Log.i(TAG, "Setup complete, session ready")
-            return
-        }
-
-        if (json.has("toolCall")) {
-            handleToolCall(json.getAsJsonObject("toolCall"))
-            return
-        }
-
-        if (json.has("serverContent")) {
-            val content = json.getAsJsonObject("serverContent")
-
-            if (content.has("modelTurn")) {
-                val parts = content.getAsJsonObject("modelTurn")
-                    .getAsJsonArray("parts") ?: return
-                for (i in 0 until parts.size()) {
-                    val part = parts[i].asJsonObject
-                    if (part.has("inlineData")) {
-                        val data = part.getAsJsonObject("inlineData")
-                        val b64 = data.get("data").asString
-                        playAudioChunk(Base64.decode(b64, Base64.DEFAULT))
-                    }
+        if (live != null && scope != null) {
+            scope.launch(Dispatchers.Default) {
+                try {
+                    live.stopAudioConversation()
+                    live.close()
+                } catch (t: Throwable) {
+                    Log.w(TAG, "Error closing session: ${t.message}")
                 }
             }
         }
     }
 
-    private fun handleToolCall(toolCall: JsonObject) {
-        val calls = toolCall.getAsJsonArray("functionCalls") ?: return
-        for (i in 0 until calls.size()) {
-            val fc = calls[i].asJsonObject
-            val id = fc.get("id")?.asString ?: "unknown"
-            val name = fc.get("name")?.asString ?: continue
-            val args = fc.getAsJsonObject("args")
-
-            val command = EmailCommandTool.parse(name, args)
-            if (command != null) {
-                _functionCalls.tryEmit(FunctionCall(id = id, name = name, command = command))
-            } else {
-                Log.w(TAG, "Unknown function call: $name")
-                sendToolResponse(id, name, "Unknown command")
-            }
+    /**
+     * Inject a short transcript describing what the user is looking at.
+     * Called on email selection / tier change so the model knows the referent
+     * of "this email" without round-tripping.
+     */
+    suspend fun sendContextUpdate(text: String) {
+        val live = session ?: return
+        try {
+            live.send(content(role = "user") { text(text) })
+        } catch (t: Throwable) {
+            Log.w(TAG, "sendContextUpdate failed: ${t.message}")
         }
     }
 
-    // -- Audio playback -----------------------------------------------------------
+    // ---------------------------------------------------------------------------
+    // Function call plumbing
+    // ---------------------------------------------------------------------------
 
-    private fun ensureAudioTrack(): AudioTrack {
-        audioTrack?.let { return it }
-
-        val minBuf = AudioTrack.getMinBufferSize(
-            PLAYBACK_SAMPLE_RATE,
-            AudioFormat.CHANNEL_OUT_MONO,
-            AudioFormat.ENCODING_PCM_16BIT,
-        )
-        val track = AudioTrack.Builder()
-            .setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ASSISTANT)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                    .build()
+    private fun handleFunctionCall(call: FunctionCallPart): FunctionResponsePart {
+        val args = call.args.mapValues { (_, v) ->
+            (v as? JsonPrimitive)?.content
+        }
+        val command = EmailCommandTool.parse(call.name, args)
+        return if (command != null) {
+            _commands.tryEmit(command)
+            FunctionResponsePart(
+                name = call.name,
+                response = buildJsonObject {
+                    put("status", JsonPrimitive("ok"))
+                },
             )
-            .setAudioFormat(
-                AudioFormat.Builder()
-                    .setSampleRate(PLAYBACK_SAMPLE_RATE)
-                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                    .build()
+        } else {
+            Log.w(TAG, "Unknown function call: ${call.name}")
+            FunctionResponsePart(
+                name = call.name,
+                response = buildJsonObject {
+                    put("status", JsonPrimitive("unknown_function"))
+                },
             )
-            .setBufferSizeInBytes(minBuf * 2)
-            .setTransferMode(AudioTrack.MODE_STREAM)
-            .build()
-
-        track.play()
-        audioTrack = track
-        return track
+        }
     }
 
-    private fun playAudioChunk(pcmBytes: ByteArray) {
-        val track = ensureAudioTrack()
-        track.write(pcmBytes, 0, pcmBytes.size)
+    companion object {
+        private const val TAG = "GeminiLive"
+
+        // Firebase AI Logic Live API on the Gemini Developer API backend exposes
+        // only the native-audio variant. Pin the dated preview ID — aliases are not
+        // supported for Live models. Source: firebase.google.com/docs/ai-logic/live-api
+        private const val MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
+
+        private val SYSTEM_PROMPT = """
+            You are XrMail's voice operator. The user is wearing a headset and cannot type.
+            Your job is to run the app FOR them, conversationally and with initiative.
+
+            Behavior rules:
+            - When anything the user says maps to a function, CALL IT IMMEDIATELY — do not
+              narrate first, do not ask permission. Speak a short confirmation after the call.
+            - You can chain calls. "Archive everything from promotions" → loop calls.
+              "Reply saying I'll be there" → call reply with body filled.
+            - When a command needs an email and one is already selected, USE THE SELECTED
+              ONE. Only ask for clarification if nothing is selected AND the referent is
+              truly ambiguous (multiple candidates in the context).
+            - Use the context block to answer inbox questions directly without a round trip.
+              "What's urgent?" → read priority from context, don't call search.
+              "Anything from Sarah?" → scan top-unread in context first.
+            - Reference emails by sender or subject, never by id.
+            - Use read_aloud for full body, summarize for a one-sentence gist.
+            - After a destructive action (archive, send), speak a warm one-clause
+              confirmation: "Archived." "Sent to Sarah." "Snoozed till tomorrow."
+            - If you are unsure WHICH function fits, prefer speak to clarify rather than
+              guessing. But lean toward action — the user is hands-free.
+            - Keep conversational turns under ~15 words unless the user asks for detail.
+            - You are warm and direct. Not chatty. Not robotic.
+        """.trimIndent()
     }
 }
-
-private const val SYSTEM_INSTRUCTION = """You are the voice assistant for XrMail, an XR email client running on a headset.
-The user controls their email entirely by voice. Keep spoken responses concise — under 15 words when possible.
-Use the provided functions to control the interface. When the user asks to read an email, use read_email or read_summary.
-When they say archive, snooze, reply, star, forward, etc., call the matching function.
-When reading urgency or unread counts, use what_is_urgent or how_many_unread.
-For navigation, use expand/collapse functions matching the user's intent.
-Do NOT make up email content — only reference data returned by function results."""

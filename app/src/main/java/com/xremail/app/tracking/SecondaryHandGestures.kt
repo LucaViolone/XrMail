@@ -7,7 +7,6 @@ import androidx.xr.arcore.HandJointType
 import androidx.xr.runtime.HandTrackingMode
 import androidx.xr.runtime.Session
 import androidx.xr.runtime.SessionConfigureSuccess
-import androidx.xr.runtime.math.Pose
 import androidx.xr.runtime.math.Vector3
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -22,7 +21,15 @@ private const val PINCH_DISTANCE_THRESHOLD = 0.04f
 private const val PINCH_HOLD_DURATION_MS = 600L
 private const val SWIPE_DISTANCE_THRESHOLD = 0.08f
 private const val SWIPE_VELOCITY_THRESHOLD = 0.15f
+private const val DEDUP_WINDOW_MS = 250L
 
+/**
+ * Tracks pinch + swipe gestures on BOTH hands. Early versions only watched the
+ * non-dominant hand because the OS-level gaze-pinch on the dominant hand was
+ * expected to drive panel clicks directly. In practice users pinch with either
+ * hand interchangeably, so we observe both and de-dupe identical gestures
+ * fired within 250 ms.
+ */
 class SecondaryHandGestures {
 
     enum class Gesture {
@@ -37,58 +44,66 @@ class SecondaryHandGestures {
     private val _gestures = MutableSharedFlow<Gesture>(extraBufferCapacity = 16)
     val gestures: SharedFlow<Gesture> = _gestures.asSharedFlow()
 
-    private var trackingJob: Job? = null
+    private var leftJob: Job? = null
+    private var rightJob: Job? = null
 
-    private var isPinching = false
-    private var pinchStartTimeMs = 0L
-    private var pinchEmitted = false
+    private val leftHand = HandState("L")
+    private val rightHand = HandState("R")
 
-    private var palmPositionHistory = mutableListOf<Pair<Long, Vector3>>()
-    private val positionHistoryMaxSize = 10
+    @Volatile private var lastEmitType: Gesture? = null
+    @Volatile private var lastEmitMs: Long = 0L
 
     fun startTracking(
         session: Session,
         contentResolver: ContentResolver,
         scope: CoroutineScope,
     ) {
-        trackingJob?.cancel()
+        stopTracking()
 
         val configResult = session.configure(
             session.config.copy(handTracking = HandTrackingMode.BOTH)
         )
         if (configResult is SessionConfigureSuccess) {
-            Log.d(TAG, "Hand tracking configured")
+            Log.d(TAG, "Hand tracking configured (both hands)")
         } else {
             Log.w(TAG, "Hand tracking config result: $configResult")
         }
 
-        val primarySide = Hand.getPrimaryHandSide(contentResolver)
-        val secondaryHand = if (primarySide == Hand.HandSide.LEFT) {
-            Hand.right(session)
-        } else {
-            Hand.left(session)
-        }
+        val left = Hand.left(session)
+        val right = Hand.right(session)
 
-        if (secondaryHand == null) {
-            Log.w(TAG, "Secondary hand not available")
+        if (left == null && right == null) {
+            Log.w(TAG, "Neither hand available")
             return
         }
 
-        trackingJob = scope.launch {
-            secondaryHand.state.collect { handState ->
-                processHandState(handState)
+        if (left != null) {
+            leftJob = scope.launch {
+                left.state.collect { handState -> processHandState(handState, leftHand) }
             }
+        } else {
+            Log.w(TAG, "Left hand unavailable")
+        }
+
+        if (right != null) {
+            rightJob = scope.launch {
+                right.state.collect { handState -> processHandState(handState, rightHand) }
+            }
+        } else {
+            Log.w(TAG, "Right hand unavailable")
         }
     }
 
     fun stopTracking() {
-        trackingJob?.cancel()
-        trackingJob = null
-        palmPositionHistory.clear()
-        isPinching = false
+        leftJob?.cancel()
+        rightJob?.cancel()
+        leftJob = null
+        rightJob = null
+        leftHand.reset()
+        rightHand.reset()
     }
 
-    private fun processHandState(handState: Hand.State) {
+    private fun processHandState(handState: Hand.State, s: HandState) {
         val thumbTip = handState.handJoints[HandJointType.HAND_JOINT_TYPE_THUMB_TIP] ?: return
         val indexTip = handState.handJoints[HandJointType.HAND_JOINT_TYPE_INDEX_TIP] ?: return
         val palm = handState.handJoints[HandJointType.HAND_JOINT_TYPE_PALM] ?: return
@@ -96,42 +111,42 @@ class SecondaryHandGestures {
         val pinchDistance = Vector3.distance(thumbTip.translation, indexTip.translation)
         val now = System.currentTimeMillis()
 
-        detectPinch(pinchDistance, now)
-        trackPalmForSwipe(palm.translation, now)
+        detectPinch(pinchDistance, now, s)
+        trackPalmForSwipe(palm.translation, now, s)
     }
 
-    private fun detectPinch(distance: Float, now: Long) {
-        val wasPinching = isPinching
-        isPinching = distance < PINCH_DISTANCE_THRESHOLD
+    private fun detectPinch(distance: Float, now: Long, s: HandState) {
+        val wasPinching = s.isPinching
+        s.isPinching = distance < PINCH_DISTANCE_THRESHOLD
 
-        if (isPinching && !wasPinching) {
-            pinchStartTimeMs = now
-            pinchEmitted = false
+        if (s.isPinching && !wasPinching) {
+            s.pinchStartTimeMs = now
+            s.pinchEmitted = false
         }
 
-        if (isPinching && !pinchEmitted) {
-            val holdDuration = now - pinchStartTimeMs
+        if (s.isPinching && !s.pinchEmitted) {
+            val holdDuration = now - s.pinchStartTimeMs
             if (holdDuration >= PINCH_HOLD_DURATION_MS) {
-                _gestures.tryEmit(Gesture.PINCH_HOLD_EXPAND)
-                pinchEmitted = true
+                emit(Gesture.PINCH_HOLD_EXPAND, s)
+                s.pinchEmitted = true
             }
         }
 
-        if (!isPinching && wasPinching && !pinchEmitted) {
-            _gestures.tryEmit(Gesture.PINCH_SELECT)
+        if (!s.isPinching && wasPinching && !s.pinchEmitted) {
+            emit(Gesture.PINCH_SELECT, s)
         }
     }
 
-    private fun trackPalmForSwipe(palmPos: Vector3, now: Long) {
-        palmPositionHistory.add(now to palmPos)
-        if (palmPositionHistory.size > positionHistoryMaxSize) {
-            palmPositionHistory.removeAt(0)
+    private fun trackPalmForSwipe(palmPos: Vector3, now: Long, s: HandState) {
+        s.palmPositionHistory.add(now to palmPos)
+        if (s.palmPositionHistory.size > POSITION_HISTORY_MAX) {
+            s.palmPositionHistory.removeAt(0)
         }
 
-        if (palmPositionHistory.size < 4) return
+        if (s.palmPositionHistory.size < 4) return
 
-        val oldest = palmPositionHistory.first()
-        val newest = palmPositionHistory.last()
+        val oldest = s.palmPositionHistory.first()
+        val newest = s.palmPositionHistory.last()
         val dt = (newest.first - oldest.first) / 1000f
         if (dt < 0.05f) return
 
@@ -146,23 +161,29 @@ class SecondaryHandGestures {
 
         if (absDx > SWIPE_DISTANCE_THRESHOLD && absDx > absDy * 1.5f) {
             if (kotlin.math.abs(vx) > SWIPE_VELOCITY_THRESHOLD) {
-                if (vx > 0) {
-                    _gestures.tryEmit(Gesture.SWIPE_RIGHT_SNOOZE)
-                } else {
-                    _gestures.tryEmit(Gesture.SWIPE_LEFT_ARCHIVE)
-                }
-                palmPositionHistory.clear()
+                if (vx > 0) emit(Gesture.SWIPE_RIGHT_SNOOZE, s)
+                else emit(Gesture.SWIPE_LEFT_ARCHIVE, s)
+                s.palmPositionHistory.clear()
             }
         } else if (absDy > SWIPE_DISTANCE_THRESHOLD && absDy > absDx * 1.5f) {
             if (kotlin.math.abs(vy) > SWIPE_VELOCITY_THRESHOLD) {
-                if (vy > 0) {
-                    _gestures.tryEmit(Gesture.SWIPE_UP_STAR)
-                } else {
-                    _gestures.tryEmit(Gesture.SWIPE_DOWN_DISMISS)
-                }
-                palmPositionHistory.clear()
+                if (vy > 0) emit(Gesture.SWIPE_UP_STAR, s)
+                else emit(Gesture.SWIPE_DOWN_DISMISS, s)
+                s.palmPositionHistory.clear()
             }
         }
+    }
+
+    private fun emit(gesture: Gesture, s: HandState) {
+        val now = System.currentTimeMillis()
+        if (lastEmitType == gesture && now - lastEmitMs < DEDUP_WINDOW_MS) {
+            Log.d(TAG, "dedup ${s.label} $gesture (within $DEDUP_WINDOW_MS ms)")
+            return
+        }
+        lastEmitType = gesture
+        lastEmitMs = now
+        Log.d(TAG, "emit ${s.label} $gesture")
+        _gestures.tryEmit(gesture)
     }
 
     fun onGestureDetected(gesture: Gesture) {
@@ -171,5 +192,23 @@ class SecondaryHandGestures {
 
     fun simulateGesture(gesture: Gesture) {
         _gestures.tryEmit(gesture)
+    }
+
+    private class HandState(val label: String) {
+        var isPinching = false
+        var pinchStartTimeMs = 0L
+        var pinchEmitted = false
+        val palmPositionHistory = mutableListOf<Pair<Long, Vector3>>()
+
+        fun reset() {
+            isPinching = false
+            pinchStartTimeMs = 0L
+            pinchEmitted = false
+            palmPositionHistory.clear()
+        }
+    }
+
+    companion object {
+        private const val POSITION_HISTORY_MAX = 10
     }
 }

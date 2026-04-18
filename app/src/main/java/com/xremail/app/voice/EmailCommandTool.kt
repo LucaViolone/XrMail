@@ -1,196 +1,175 @@
 package com.xremail.app.voice
 
-import com.google.gson.JsonArray
-import com.google.gson.JsonObject
+import com.google.firebase.ai.type.FunctionDeclaration
+import com.google.firebase.ai.type.Schema
+import com.google.firebase.ai.type.Tool
 
 /**
- * Function-calling tool definitions for the Gemini Live API session.
+ * Function-calling tool definitions the Gemini Live session exposes to the model.
  *
- * The sealed [Command] hierarchy maps 1:1 to the function declarations
- * sent in the WebSocket setup message. [VoiceCommandExecutor] handles
- * every variant, translating voice commands into ViewModel actions.
+ * The model decides when to call these based on the user's speech; we register
+ * them on connect and dispatch each call into [com.xremail.app.viewmodel.EmailViewModel]
+ * via [VoiceCommandDispatcher].
+ *
+ * When adding a new command:
+ * 1. Add a subclass to [Command].
+ * 2. Add a [FunctionDeclaration] below with matching name/args.
+ * 3. Handle the new case in [parse] and in [VoiceCommandDispatcher.dispatch].
  */
 object EmailCommandTool {
 
     sealed class Command {
-        // Tier navigation
-        data object ExpandToNotifications : Command()
-        data object ExpandToTriage : Command()
-        data object ExpandToFocus : Command()
-        data object CollapseToHud : Command()
-        data object CollapseOneTier : Command()
-
-        // Email selection
         data class SelectEmail(val emailId: String) : Command()
-        data object SelectNextUnread : Command()
-
-        // Email actions
-        data object ArchiveSelected : Command()
-        data class ArchiveEmail(val emailId: String) : Command()
-        data object SnoozeSelected : Command()
-        data class SnoozeEmail(val emailId: String, val until: String? = null) : Command()
-        data object StarSelected : Command()
-        data object ForwardSelected : Command()
-
-        // TTS / reading
-        data object ReadTopPriority : Command()
-        data object ReadNextUnread : Command()
-        data class ReadEmail(val emailId: String) : Command()
-        data object ReadSummary : Command()
-        data object StopTts : Command()
-        data object PauseTts : Command()
-        data object ResumeTts : Command()
-
-        // Compose / reply
-        data class VoiceReply(val briefInstruction: String) : Command()
-        data object ConfirmSend : Command()
-        data object CancelCompose : Command()
-        data class EditDraft(val instruction: String) : Command()
-
-        // Filtering
-        data class FilterCategory(val category: String) : Command()
-        data object ShowAllEmails : Command()
+        data class ArchiveEmail(val emailId: String?) : Command()
+        data class SnoozeEmail(val emailId: String?, val until: String) : Command()
+        data class ForwardEmail(val emailId: String?, val to: String) : Command()
+        data class Reply(val emailId: String?, val body: String?) : Command()
         data class Search(val query: String) : Command()
-
-        // Utility
-        data object WhatIsUrgent : Command()
-        data object HowManyUnread : Command()
+        data class ReadAloud(val emailId: String?) : Command()
+        data class Summarize(val emailId: String?) : Command()
+        data class DraftReply(val emailId: String?, val tone: String?) : Command()
+        data class SendDraft(val emailId: String?) : Command()
+        data class FilterCategory(val category: String) : Command()
+        data object ShowInbox : Command()
+        data object GoBack : Command()
+        data class Speak(val text: String) : Command()
     }
 
-    /**
-     * Parses a Gemini `toolCall.functionCalls[]` entry into a [Command].
-     * [args] is the raw JSON object from the function call.
-     */
-    fun parse(name: String, args: JsonObject?): Command? {
-        return when (name) {
-            "expand_to_notifications" -> Command.ExpandToNotifications
-            "expand_to_triage" -> Command.ExpandToTriage
-            "expand_to_focus" -> Command.ExpandToFocus
-            "collapse_to_hud" -> Command.CollapseToHud
-            "collapse_one_tier" -> Command.CollapseOneTier
+    // ---------------------------------------------------------------------------
+    // Gemini Live tool schema
+    // ---------------------------------------------------------------------------
 
-            "select_email" -> Command.SelectEmail(args?.str("emailId") ?: return null)
-            "select_next_unread" -> Command.SelectNextUnread
+    private val selectEmail = FunctionDeclaration(
+        "select_email",
+        "Open a specific email by id. Use when the user refers to an email in the current inbox.",
+        mapOf("emailId" to Schema.string("The id of the email to open.")),
+    )
 
-            "archive_selected" -> Command.ArchiveSelected
-            "archive_email" -> Command.ArchiveEmail(args?.str("emailId") ?: return null)
-            "snooze_selected" -> Command.SnoozeSelected
-            "snooze_email" -> Command.SnoozeEmail(
-                emailId = args?.str("emailId") ?: return null,
-                until = args.str("until"),
-            )
-            "star_selected" -> Command.StarSelected
-            "forward_selected" -> Command.ForwardSelected
+    private val archiveEmail = FunctionDeclaration(
+        "archive_email",
+        "Archive an email. Omit emailId to archive the currently selected one.",
+        mapOf("emailId" to Schema.string("Email id, optional.")),
+        optionalParameters = listOf("emailId"),
+    )
 
-            "read_top_priority" -> Command.ReadTopPriority
-            "read_next_unread" -> Command.ReadNextUnread
-            "read_email" -> Command.ReadEmail(args?.str("emailId") ?: return null)
-            "read_summary" -> Command.ReadSummary
-            "stop_tts" -> Command.StopTts
-            "pause_tts" -> Command.PauseTts
-            "resume_tts" -> Command.ResumeTts
+    private val snoozeEmail = FunctionDeclaration(
+        "snooze_email",
+        "Snooze an email until a time phrase like 'tomorrow 9am'. Omits emailId = currently selected.",
+        mapOf(
+            "emailId" to Schema.string("Email id, optional."),
+            "until" to Schema.string("Natural language time to resurface, e.g. 'tomorrow 9am'."),
+        ),
+        optionalParameters = listOf("emailId"),
+    )
 
-            "voice_reply" -> Command.VoiceReply(args?.str("briefInstruction") ?: "")
-            "confirm_send" -> Command.ConfirmSend
-            "cancel_compose" -> Command.CancelCompose
-            "edit_draft" -> Command.EditDraft(args?.str("instruction") ?: "")
+    private val forwardEmail = FunctionDeclaration(
+        "forward_email",
+        "Forward an email to a recipient.",
+        mapOf(
+            "emailId" to Schema.string("Email id, optional."),
+            "to" to Schema.string("Recipient email address or contact name."),
+        ),
+        optionalParameters = listOf("emailId"),
+    )
 
-            "filter_category" -> Command.FilterCategory(args?.str("category") ?: return null)
-            "show_all_emails" -> Command.ShowAllEmails
-            "search" -> Command.Search(args?.str("query") ?: "")
+    private val reply = FunctionDeclaration(
+        "reply",
+        "Compose a reply to the current email. body is the message to send; omit for blank compose.",
+        mapOf(
+            "emailId" to Schema.string("Email id, optional."),
+            "body" to Schema.string("Full message body to send, optional."),
+        ),
+        optionalParameters = listOf("emailId", "body"),
+    )
 
-            "what_is_urgent" -> Command.WhatIsUrgent
-            "how_many_unread" -> Command.HowManyUnread
+    private val search = FunctionDeclaration(
+        "search",
+        "Search the inbox.",
+        mapOf("query" to Schema.string("Natural language search query.")),
+    )
 
-            else -> null
-        }
+    private val readAloud = FunctionDeclaration(
+        "read_aloud",
+        "Read the selected email body aloud (not a summary — verbatim).",
+        mapOf("emailId" to Schema.string("Email id, optional.")),
+        optionalParameters = listOf("emailId"),
+    )
+
+    private val summarize = FunctionDeclaration(
+        "summarize",
+        "Summarize the selected email in one or two sentences and speak it.",
+        mapOf("emailId" to Schema.string("Email id, optional.")),
+        optionalParameters = listOf("emailId"),
+    )
+
+    private val draftReply = FunctionDeclaration(
+        "draft_reply",
+        "Generate a draft reply for review (does not send).",
+        mapOf(
+            "emailId" to Schema.string("Email id, optional."),
+            "tone" to Schema.string("Tone of the draft, e.g. formal, friendly."),
+        ),
+        optionalParameters = listOf("emailId", "tone"),
+    )
+
+    private val sendDraft = FunctionDeclaration(
+        "send_draft",
+        "Send the draft currently on screen.",
+        mapOf("emailId" to Schema.string("Email id being replied to, optional.")),
+        optionalParameters = listOf("emailId"),
+    )
+
+    private val filterCategory = FunctionDeclaration(
+        "filter_category",
+        "Filter the inbox to a category like 'work', 'personal', 'promotions'.",
+        mapOf("category" to Schema.string("Category name.")),
+    )
+
+    private val showInbox = FunctionDeclaration(
+        "show_inbox",
+        "Return to the inbox view.",
+        emptyMap(),
+    )
+
+    private val goBack = FunctionDeclaration(
+        "go_back",
+        "Go back one step in navigation.",
+        emptyMap(),
+    )
+
+    private val speak = FunctionDeclaration(
+        "speak",
+        "Speak a short phrase to the user through local TTS.",
+        mapOf("text" to Schema.string("The phrase to speak.")),
+    )
+
+    val tool: Tool = Tool.functionDeclarations(
+        listOf(
+            selectEmail, archiveEmail, snoozeEmail, forwardEmail, reply, search,
+            readAloud, summarize, draftReply, sendDraft, filterCategory,
+            showInbox, goBack, speak,
+        ),
+    )
+
+    // ---------------------------------------------------------------------------
+    // Parsing: FunctionCallPart (from Gemini Live) -> Command
+    // ---------------------------------------------------------------------------
+
+    fun parse(name: String, args: Map<String, String?>): Command? = when (name) {
+        "select_email" -> args["emailId"]?.let { Command.SelectEmail(it) }
+        "archive_email" -> Command.ArchiveEmail(args["emailId"])
+        "snooze_email" -> args["until"]?.let { Command.SnoozeEmail(args["emailId"], it) }
+        "forward_email" -> args["to"]?.let { Command.ForwardEmail(args["emailId"], it) }
+        "reply" -> Command.Reply(args["emailId"], args["body"])
+        "search" -> args["query"]?.let { Command.Search(it) }
+        "read_aloud" -> Command.ReadAloud(args["emailId"])
+        "summarize" -> Command.Summarize(args["emailId"])
+        "draft_reply" -> Command.DraftReply(args["emailId"], args["tone"])
+        "send_draft" -> Command.SendDraft(args["emailId"])
+        "filter_category" -> args["category"]?.let { Command.FilterCategory(it) }
+        "show_inbox" -> Command.ShowInbox
+        "go_back" -> Command.GoBack
+        "speak" -> args["text"]?.let { Command.Speak(it) }
+        else -> null
     }
-
-    /**
-     * Returns the `tools` JSON array for the Gemini WebSocket setup message.
-     */
-    fun toolDeclarationsJson(): JsonArray {
-        val declarations = JsonArray()
-
-        fun decl(name: String, desc: String, params: JsonObject? = null) {
-            val obj = JsonObject().apply {
-                addProperty("name", name)
-                addProperty("description", desc)
-                if (params != null) add("parameters", params)
-            }
-            declarations.add(obj)
-        }
-
-        fun objParams(vararg fields: Pair<String, String>): JsonObject {
-            val props = JsonObject()
-            for ((fieldName, fieldDesc) in fields) {
-                props.add(fieldName, JsonObject().apply {
-                    addProperty("type", "STRING")
-                    addProperty("description", fieldDesc)
-                })
-            }
-            return JsonObject().apply {
-                addProperty("type", "OBJECT")
-                add("properties", props)
-            }
-        }
-
-        // Tier navigation
-        decl("expand_to_notifications", "Show the notification cards overlay")
-        decl("expand_to_triage", "Open the email triage/inbox view")
-        decl("expand_to_focus", "Expand to the full email focus view with reader and sidebar")
-        decl("collapse_to_hud", "Minimize everything back to the ambient HUD")
-        decl("collapse_one_tier", "Go back one level of the interface")
-
-        // Email selection
-        decl("select_email", "Select a specific email by its ID", objParams("emailId" to "The email ID"))
-        decl("select_next_unread", "Jump to the next unread email")
-
-        // Email actions
-        decl("archive_selected", "Archive the currently selected email")
-        decl("archive_email", "Archive a specific email by ID", objParams("emailId" to "The email ID to archive"))
-        decl("snooze_selected", "Snooze the currently selected email")
-        decl("snooze_email", "Snooze a specific email", objParams(
-            "emailId" to "The email ID to snooze",
-            "until" to "When to resurface, e.g. 'tomorrow' or '3pm'",
-        ))
-        decl("star_selected", "Toggle star on the currently selected email")
-        decl("forward_selected", "Forward the currently selected email")
-
-        // TTS / reading
-        decl("read_top_priority", "Read aloud the highest priority unread email summary")
-        decl("read_next_unread", "Read the next unread email summary aloud")
-        decl("read_email", "Read the full body of a specific email aloud", objParams("emailId" to "The email ID to read"))
-        decl("read_summary", "Read the AI summary of the currently selected email aloud")
-        decl("stop_tts", "Stop reading aloud immediately")
-        decl("pause_tts", "Pause the current readout")
-        decl("resume_tts", "Resume the paused readout")
-
-        // Compose / reply
-        decl("voice_reply", "Reply to the current email using a brief instruction",
-            objParams("briefInstruction" to "Short instruction like 'say I will be there at 3'"))
-        decl("confirm_send", "Confirm and send the current draft")
-        decl("cancel_compose", "Cancel the current email composition")
-        decl("edit_draft", "Edit the current draft with a new instruction",
-            objParams("instruction" to "What to change in the draft"))
-
-        // Filtering
-        decl("filter_category", "Filter inbox by category",
-            objParams("category" to "Category name: people, updates, promotions, newsletters, transactional, or all"))
-        decl("show_all_emails", "Show all emails without filtering")
-        decl("search", "Search emails by keyword", objParams("query" to "The search query"))
-
-        // Utility
-        decl("what_is_urgent", "List the most urgent unread emails")
-        decl("how_many_unread", "Tell the user how many unread emails they have")
-
-        val toolsArray = JsonArray()
-        toolsArray.add(JsonObject().apply {
-            add("functionDeclarations", declarations)
-        })
-        return toolsArray
-    }
-
-    private fun JsonObject.str(key: String): String? =
-        get(key)?.takeIf { it.isJsonPrimitive }?.asString
 }

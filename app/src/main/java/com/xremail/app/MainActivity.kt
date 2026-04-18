@@ -11,6 +11,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -19,11 +21,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.xr.compose.platform.LocalSession
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import com.xremail.app.backend.service.AuthRepository
 import com.xremail.app.backend.service.NetworkClient
 import com.xremail.app.backend.service.TokenManager
@@ -35,23 +40,32 @@ import com.xremail.app.tracking.KeyboardGestureDispatcher
 import com.xremail.app.tracking.SecondaryHandGestures
 import com.xremail.app.tracking.TiltScrollController
 import com.xremail.app.tracking.XrSessionManager
+import com.xremail.app.ui.spatial.DisplayMode
+import com.xremail.app.ui.spatial.DisplayModeRouter
+import com.xremail.app.ui.feedback.GestureFeedbackOverlay
+import com.xremail.app.ui.spatial.GlimmerEmailApp
 import com.xremail.app.ui.spatial.InteractionTierRouter
 import com.xremail.app.ui.theme.XREmailTheme
 import com.xremail.app.viewmodel.EmailViewModel
 import com.xremail.app.viewmodel.InteractionTier
 import com.xremail.app.voice.GeminiLiveManager
 import com.xremail.app.voice.TTSManager
-import com.xremail.app.voice.VoiceCommandExecutor
+import com.xremail.app.voice.VoiceCommandDispatcher
 import com.xremail.app.voice.VoiceComposeManager
 
 class MainActivity : ComponentActivity() {
 
+    // ---------------------------------------------------------------------------
+    // Backend wiring — swap USE_REAL_BACKEND to true once the server is running
+    // ---------------------------------------------------------------------------
+
     private val USE_REAL_BACKEND = false
-    private val BACKEND_URL = "http://10.0.2.2:8080/"
+    private val BACKEND_URL = "http://10.0.2.2:8080/" // emulator → host loopback
 
     private lateinit var tokenManager: TokenManager
     private lateinit var authRepository: AuthRepository
 
+    // Wired by XrMailApp composable so emulator key events reach gesture logic
     var keyboardDispatcher: KeyboardGestureDispatcher? = null
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
@@ -79,6 +93,7 @@ class MainActivity : ComponentActivity() {
             authRepository = AuthRepository(api, tokenManager)
             GmailRepository(api)
         } else {
+            // Phase 1: use mock data so the UI works without a running backend
             authRepository = AuthRepository(
                 api = NetworkClient.create(BACKEND_URL, tokenManager),
                 tokenManager = tokenManager,
@@ -88,10 +103,13 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             XREmailTheme {
-                XrMailApp(viewModelFactory = EmailViewModel.Factory(emailRepository))
+                XREmailApp(
+                    viewModelFactory = EmailViewModel.Factory(emailRepository)
+                )
             }
         }
 
+        // Handle OAuth deep-link if the activity was launched via xrmail://auth/...
         intent?.let { handleOAuthIntent(it) }
     }
 
@@ -100,6 +118,13 @@ class MainActivity : ComponentActivity() {
         handleOAuthIntent(intent)
     }
 
+    /**
+     * Processes the xrmail://auth/success or xrmail://auth/error deep link
+     * that the Ktor backend sends after the Gmail OAuth flow completes.
+     *
+     * On success: saves the JWT via [AuthRepository] and reloads emails.
+     * On error:   logs the reason (production would show a UI error state).
+     */
     private fun handleOAuthIntent(intent: Intent) {
         val uri = intent.data ?: return
         if (uri.scheme != "xrmail" || uri.host != "auth") return
@@ -122,26 +147,111 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun XrMailApp(viewModelFactory: EmailViewModel.Factory) {
-    val viewModel: EmailViewModel = viewModel(factory = viewModelFactory)
+fun XREmailApp(viewModelFactory: EmailViewModel.Factory) {
+    val displayMode = DisplayModeRouter.detect()
+
+    when (displayMode) {
+        DisplayMode.GLASSES_ADDITIVE -> GlimmerEmailApp()
+        DisplayMode.HEADSET -> HeadsetEmailApp(viewModelFactory)
+    }
+}
+
+@Composable
+private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
+    val viewModel: EmailViewModel = viewModel(factory = factory)
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
     val ttsManager = remember { TTSManager(context) }
     val geminiLive = remember { GeminiLiveManager() }
-    val voiceCompose = remember { VoiceComposeManager(ttsManager) }
-    val executor = remember(viewModel, ttsManager, voiceCompose, geminiLive) {
-        VoiceCommandExecutor(viewModel, ttsManager, voiceCompose, geminiLive)
+    val voiceCompose = remember { VoiceComposeManager(geminiLive, ttsManager) }
+    val voiceDispatcher = remember(viewModel) {
+        VoiceCommandDispatcher(viewModel, ttsManager)
+    }
+
+    // Runtime permissions — mic for Gemini Live, XR sensors for session.configure.
+    // Missing XR perms crash OpenXrManager.configure with SecurityException.
+    val requiredPerms = remember {
+        arrayOf(
+            Manifest.permission.RECORD_AUDIO,
+            "android.permission.HAND_TRACKING",
+            "android.permission.FACE_TRACKING",
+            "android.permission.EYE_TRACKING_COARSE",
+            "android.permission.SCENE_UNDERSTANDING",
+        )
+    }
+    fun allGranted(): Boolean = requiredPerms.all {
+        ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+    }
+    var micGranted by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(
+                context, Manifest.permission.RECORD_AUDIO,
+            ) == PackageManager.PERMISSION_GRANTED
+        )
+    }
+    var xrGranted by remember { mutableStateOf(allGranted()) }
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { results ->
+        micGranted = results[Manifest.permission.RECORD_AUDIO] == true ||
+            ContextCompat.checkSelfPermission(
+                context, Manifest.permission.RECORD_AUDIO,
+            ) == PackageManager.PERMISSION_GRANTED
+        xrGranted = allGranted()
+    }
+    LaunchedEffect(Unit) {
+        if (!allGranted()) permissionLauncher.launch(requiredPerms)
+    }
+
+    // Connect / disconnect Gemini Live once the mic permission is settled.
+    LaunchedEffect(micGranted) {
+        if (micGranted) {
+            geminiLive.setContextProvider { voiceDispatcher.currentContextSummary() }
+            geminiLive.connect(scope)
+        }
+    }
+    DisposableEffect(geminiLive) {
+        onDispose { geminiLive.disconnect() }
+    }
+
+    // Route function calls the model emits into the ViewModel.
+    LaunchedEffect(geminiLive, voiceDispatcher) {
+        geminiLive.commands.collect { voiceDispatcher.dispatch(it) }
+    }
+
+    // Speak the AI summary whenever the selected email changes — the core
+    // "can I hear it?" demo path. Keeps Gemini Live as the conversational layer
+    // and uses on-device TTS for deterministic narration.
+    LaunchedEffect(Unit) {
+        viewModel.uiState
+            .map { it.selectedEmail?.id to it.selectedEmail?.aiSummary }
+            .distinctUntilChanged()
+            .collect { (_, summary) ->
+                if (!summary.isNullOrBlank()) ttsManager.speak(summary)
+            }
+    }
+
+    // Keep the model grounded in what the user is looking at.
+    LaunchedEffect(Unit) {
+        viewModel.uiState
+            .map { it.selectedEmail?.id }
+            .distinctUntilChanged()
+            .collect {
+                geminiLive.sendContextUpdate(voiceDispatcher.currentContextSummary())
+            }
+    }
+
+    DisposableEffect(ttsManager) {
+        onDispose { ttsManager.shutdown() }
     }
 
     val faceTracker = remember { FaceAttentionTracker() }
     val handGestures = remember { SecondaryHandGestures() }
     val tiltScroll = remember { TiltScrollController() }
     val gestureMapper = remember(viewModel) { GestureToActionMapper(viewModel) }
-    val keyboardDispatcher = remember(viewModel, handGestures) {
-        KeyboardGestureDispatcher(viewModel, handGestures)
-    }
+    val keyboardDispatcher = remember(viewModel, handGestures) { KeyboardGestureDispatcher(viewModel, handGestures) }
     val xrSessionManager = remember { XrSessionManager(faceTracker, handGestures, tiltScroll) }
 
     // Wire keyboard dispatcher to Activity for emulator key events
@@ -158,65 +268,25 @@ fun XrMailApp(viewModelFactory: EmailViewModel.Factory) {
 
     val xrSession = LocalSession.current
 
-    // -- Runtime permission for microphone ----------------------------------------
-
-    var hasMicPermission by remember {
-        mutableStateOf(
-            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)
-                == PackageManager.PERMISSION_GRANTED
-        )
-    }
-
-    val permissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted -> hasMicPermission = granted }
-
-    LaunchedEffect(Unit) {
-        if (!hasMicPermission) {
-            permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+    LaunchedEffect(xrSession, xrGranted) {
+        if (xrGranted) {
+            try {
+                xrSessionManager.startAll(
+                    session = xrSession,
+                    contentResolver = context.contentResolver,
+                    scope = scope,
+                )
+            } catch (t: Throwable) {
+                Log.e("XrMail", "XR session start failed — voice will still work", t)
+            }
         }
-    }
-
-    // -- Gemini Live voice session ------------------------------------------------
-
-    LaunchedEffect(hasMicPermission) {
-        if (!hasMicPermission) return@LaunchedEffect
-        geminiLive.connect()
-    }
-
-    LaunchedEffect(hasMicPermission, voiceSessionState) {
-        if (!hasMicPermission) return@LaunchedEffect
-        if (voiceSessionState == GeminiLiveManager.SessionState.CONNECTED) {
-            geminiLive.startAudioCapture()
-        }
-    }
-
-    LaunchedEffect(geminiLive) {
-        geminiLive.functionCalls.collect { fc ->
-            val spokenResponse = executor.execute(fc.command)
-            geminiLive.sendToolResponse(fc.id, fc.name, spokenResponse)
-        }
-    }
-
-    // -- XR session ---------------------------------------------------------------
-
-    LaunchedEffect(xrSession) {
-        xrSessionManager.startAll(
-            session = xrSession,
-            contentResolver = context.contentResolver,
-            scope = scope,
-        )
     }
 
     DisposableEffect(Unit) {
         onDispose {
             xrSessionManager.stopAll()
-            geminiLive.destroy()
-            ttsManager.destroy()
         }
     }
-
-    // -- Gesture wiring -----------------------------------------------------------
 
     LaunchedEffect(handGestures, gestureMapper) {
         handGestures.gestures.collect { gesture ->
@@ -241,36 +311,38 @@ fun XrMailApp(viewModelFactory: EmailViewModel.Factory) {
         }
     }
 
-    // -- UI -----------------------------------------------------------------------
+    Box(modifier = Modifier.fillMaxSize()) {
+        InteractionTierRouter(
+            uiState = uiState,
+            prioritySortedEmails = viewModel.prioritySortedEmails(),
+            ttsState = ttsState,
+            ttsProgress = ttsProgress,
+            tiltScrollDelta = tiltScrollDelta,
+            voiceSessionState = voiceSessionState,
+            voiceComposeState = voiceComposeState,
+            voiceDraft = voiceDraft,
+            onKeyDown = keyboardDispatcher::onKeyDown,
+            onExpandToNotifications = viewModel::expandToNotificationCards,
+            onCollapseFromNotifications = viewModel::collapseFromNotificationCards,
+            onExpandToTriage = viewModel::expandToTriage,
+            onCollapseToHud = viewModel::collapseToHud,
+            onExpandToFocus = viewModel::expandToFocus,
+            onCollapseToTriage = viewModel::collapseToTriage,
+            onEmailSelected = viewModel::selectEmail,
+            onOpenFromNotification = viewModel::openFromNotification,
+            onCategorySelected = viewModel::filterByCategory,
+            onToggleAiSummary = viewModel::toggleAiSummary,
+            onReply = viewModel::startCompose,
+            onArchive = viewModel::archiveSelected,
+            onArchiveEmail = viewModel::archiveEmail,
+            onSnooze = viewModel::snoozeSelected,
+            onSnoozeEmail = viewModel::snoozeEmail,
+            onForward = viewModel::forwardSelected,
+            onSend = viewModel::sendDraft,
+            onCancelCompose = viewModel::cancelCompose,
+            onDismissToast = viewModel::dismissToast,
+        )
 
-    InteractionTierRouter(
-        uiState = uiState,
-        prioritySortedEmails = viewModel.prioritySortedEmails(),
-        ttsState = ttsState,
-        ttsProgress = ttsProgress,
-        tiltScrollDelta = tiltScrollDelta,
-        voiceSessionState = voiceSessionState,
-        voiceComposeState = voiceComposeState,
-        voiceDraft = voiceDraft,
-        onKeyDown = keyboardDispatcher::onKeyDown,
-        onExpandToNotifications = viewModel::expandToNotificationCards,
-        onCollapseFromNotifications = viewModel::collapseFromNotificationCards,
-        onExpandToTriage = viewModel::expandToTriage,
-        onCollapseToHud = viewModel::collapseToHud,
-        onExpandToFocus = viewModel::expandToFocus,
-        onCollapseToTriage = viewModel::collapseToTriage,
-        onEmailSelected = viewModel::selectEmail,
-        onOpenFromNotification = viewModel::openFromNotification,
-        onCategorySelected = viewModel::filterByCategory,
-        onToggleAiSummary = viewModel::toggleAiSummary,
-        onReply = viewModel::startCompose,
-        onArchive = viewModel::archiveSelected,
-        onArchiveEmail = viewModel::archiveEmail,
-        onSnooze = viewModel::snoozeSelected,
-        onSnoozeEmail = viewModel::snoozeEmail,
-        onForward = viewModel::forwardSelected,
-        onSend = viewModel::sendDraft,
-        onCancelCompose = viewModel::cancelCompose,
-        onDismissToast = viewModel::dismissToast,
-    )
+        GestureFeedbackOverlay(gestures = handGestures.gestures)
+    }
 }

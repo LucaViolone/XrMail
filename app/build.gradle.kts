@@ -4,6 +4,7 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.google.services)
 }
 
 android {
@@ -87,4 +88,11 @@ dependencies {
     implementation(libs.androidx.xr.compose)
     implementation(libs.androidx.xr.material3)
     implementation(libs.androidx.xr.arcore)
+
+    // Firebase AI Logic — Gemini Live bidirectional audio session
+    implementation(platform(libs.firebase.bom))
+    implementation(libs.firebase.ai)
+
+    // firebase-ai exposes JsonObject in its public API
+    implementation(libs.kotlinx.serialization.json)
 }

@@ -9,23 +9,29 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 
 object XREmailColors {
-    val surface = Color(0xFF0A0A0F)
-    val surfaceVariant = Color(0xFF1A1A24)
-    val surfaceElevated = Color(0xFF252535)
+    val surface = Color(0xFF07080C)
+    val surfaceVariant = Color(0xFF1A1F2A)
+    val surfaceElevated = Color(0xFF2E3544)
 
-    val onSurface = Color(0xFFE8E8EE)
-    val onSurfaceVariant = Color(0xFFA0A0B0)
-    val onSurfaceDim = Color(0xFF6A6A7A)
+    val onSurface = Color(0xFFECF0F7)
+    val onSurfaceVariant = Color(0xFFC6CDDA)
+    val onSurfaceDim = Color(0xFF8892A4)
+    val onSurfaceStrong = Color(0xFFFFFFFF)
 
-    val primary = Color(0xFF7EB8D8)
+    val primary = Color(0xFF7C9CFF)
     val secondary = Color(0xFF8BD4A0)
     val tertiary = Color(0xFFD4A88B)
-    val error = Color(0xFFD88B8B)
-    val aiAccent = Color(0xFFB8A0D8)
+    val error = Color(0xFFE98D8D)
+    val aiAccent = Color(0xFF7C9CFF)
 
     val priorityHigh = Color(0xFFD4A88B)
-    val priorityMedium = Color(0xFF7EB8D8)
+    val priorityMedium = Color(0xFF8892A4)
     val priorityLow = Color(0xFF6A6A7A)
+
+    val glassFill = Color(0x12FFFFFF)
+    val glassFillStrong = Color(0xB8161A24)
+    val glassStroke = Color(0x24FFFFFF)
+    val glassEdge = Color(0x47FFFFFF)
 }
 
 @Immutable
@@ -36,6 +42,10 @@ data class ExtendedColors(
     val priorityLow: Color = XREmailColors.priorityLow,
     val surfaceElevated: Color = XREmailColors.surfaceElevated,
     val onSurfaceDim: Color = XREmailColors.onSurfaceDim,
+    val glassFill: Color = XREmailColors.glassFill,
+    val glassFillStrong: Color = XREmailColors.glassFillStrong,
+    val glassStroke: Color = XREmailColors.glassStroke,
+    val glassEdge: Color = XREmailColors.glassEdge,
 )
 
 val LocalExtendedColors = staticCompositionLocalOf { ExtendedColors() }
