@@ -13,6 +13,10 @@ xrCompose = "1.0.0-alpha12"
 xrMaterial3 = "1.0.0-alpha16"
 xrArcore = "1.0.0-alpha12"
 
+# Firebase — AI Logic (Gemini Live) + services plugin
+firebaseBom = "34.12.0"
+googleServicesPlugin = "4.4.4"
+
 # Android app — networking & storage
 retrofit = "2.11.0"
 okhttp = "4.12.0"
@@ -52,6 +56,10 @@ androidx-xr-scenecore = { group = "androidx.xr.scenecore", name = "scenecore", v
 androidx-xr-compose = { group = "androidx.xr.compose", name = "compose", version.ref = "xrCompose" }
 androidx-xr-material3 = { group = "androidx.xr.compose.material3", name = "material3", version.ref = "xrMaterial3" }
 androidx-xr-arcore = { group = "androidx.xr.arcore", name = "arcore", version.ref = "xrArcore" }
+
+# Firebase — AI Logic (Gemini Live bidirectional audio)
+firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version.ref = "firebaseBom" }
+firebase-ai = { group = "com.google.firebase", name = "firebase-ai" }
 
 # Android app — networking libraries
 retrofit-core = { group = "com.squareup.retrofit2", name = "retrofit", version.ref = "retrofit" }
@@ -95,3 +103,4 @@ kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "ko
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 ktor = { id = "io.ktor.plugin", version.ref = "ktor" }
+google-services = { id = "com.google.gms.google-services", version.ref = "googleServicesPlugin" }

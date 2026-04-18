@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "865114088486",
+    "project_id": "gen-lang-client-0891375124",
+    "storage_bucket": "gen-lang-client-0891375124.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:865114088486:android:1557b495cda2433e35b2e7",
+        "android_client_info": {
+          "package_name": "com.xremail.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAepVGfQXKsqP7TvbFpFW7J6putWrOOAGQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

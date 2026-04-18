@@ -9,4 +9,7 @@ plugins {
     alias(libs.plugins.kotlin.jvm) apply false
     alias(libs.plugins.kotlin.serialization) apply false
     alias(libs.plugins.ktor) apply false
+
+    // Firebase — processes google-services.json into generated resources
+    alias(libs.plugins.google.services) apply false
 }
