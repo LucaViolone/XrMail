@@ -1,26 +1,16 @@
 package com.xremail.app.ui.spatial
 
 import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.spring
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
-import androidx.xr.arcore.ArDevice
-import androidx.xr.compose.platform.LocalSession
 import androidx.xr.compose.subspace.layout.SubspaceModifier
 import androidx.xr.compose.subspace.layout.offset
-import androidx.xr.runtime.math.Pose
-import kotlin.math.atan2
-import kotlin.math.abs
 
 /**
  * Lazy head-follow offset.
@@ -61,62 +51,21 @@ fun rememberLazyFollowOffset(
     dampingRatio: Float = Spring.DampingRatioLowBouncy,
     deadZoneDegrees: Float = 8f,
 ): State<DpOffset> {
-    val xrSession = LocalSession.current
-
-    // Live yaw in degrees. Read via withFrameNanos so we resample every frame
-    // while the composable is attached; the ArDevice pose itself is a
-    // StateFlow, but we avoid collect() on composables to keep this cheap and
-    // independent of recomposition cadence.
-    var yawDeg by remember { mutableStateOf(0f) }
-
-    LaunchedEffect(xrSession) {
-        if (xrSession == null) {
-            yawDeg = 0f
-            return@LaunchedEffect
-        }
-        val arDevice = try {
-            ArDevice.getInstance(xrSession)
-        } catch (t: Throwable) {
-            // Device/session may not support head pose (e.g. emulator); keep
-            // the offset stable rather than throwing.
-            null
-        }
-        if (arDevice == null) {
-            yawDeg = 0f
-            return@LaunchedEffect
-        }
-        arDevice.state.collect { state ->
-            val pose: Pose = state.devicePose
-            val q = pose.rotation
-            // Yaw (rotation about Y) from a quaternion — standard formula.
-            val sinyCosp = 2.0 * (q.w * q.y + q.x * q.z)
-            val cosyCosp = 1.0 - 2.0 * (q.y * q.y + q.x * q.z)
-            val yawRad = atan2(sinyCosp, cosyCosp)
-            val deg = Math.toDegrees(yawRad).toFloat()
-            yawDeg = if (abs(deg) < deadZoneDegrees) 0f else deg
-        }
-    }
-
-    // Target X: peripheral bias minus yaw contribution. Coefficient 4f means
-    // "every 1 degree of head yaw shifts the UI by 4 dp in the opposite
-    // direction". At ~30 dp per 1 degree would feel head-locked; 4 dp gives a
-    // subtle drag-behind. Tune freely — this is the main "feel" knob.
-    val targetX: Dp = peripheralBiasX - (yawDeg * 4f).dp
-    val targetY: Dp = peripheralBiasY
-
-    val animX = animateDpAsState(
-        targetValue = targetX,
-        animationSpec = spring(dampingRatio = dampingRatio, stiffness = stiffness),
-        label = "lazyFollowX",
-    )
-    val animY = animateDpAsState(
-        targetValue = targetY,
-        animationSpec = spring(dampingRatio = dampingRatio, stiffness = stiffness),
-        label = "lazyFollowY",
-    )
-
-    return remember(animX, animY) {
-        derivedStateOf { DpOffset(animX.value, animY.value) }
+    // Disabled: the previous implementation drove a spring off ArDevice head
+    // yaw at 60 Hz, which thrashed recomposition of every SpatialPanel and made
+    // the UI feel frozen. The coefficient (4 dp / °) was also far too small to
+    // produce a visible head-follow at typical panel distance, so users saw a
+    // "stuck in space" panel even when the animation *was* running.
+    //
+    // True head-following in Jetpack XR needs Orbiter or an Entity pinned to
+    // session.scene.spatialUser.head, not a dp offset inside a world-anchored
+    // Subspace. See InteractionTierRouter where panels should move into an
+    // Orbiter-style layout.
+    //
+    // Until that refactor lands, return a constant zero so panels are stable
+    // and world-locked. Callers can still combine with their static offset.
+    return remember(peripheralBiasX, peripheralBiasY) {
+        mutableStateOf(DpOffset(peripheralBiasX, peripheralBiasY))
     }
 }
 

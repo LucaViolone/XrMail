@@ -165,7 +165,7 @@ private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
 
     val ttsManager = remember { TTSManager(context) }
     val geminiLive = remember { GeminiLiveManager() }
-    val voiceCompose = remember { VoiceComposeManager(geminiLive, ttsManager) }
+    val voiceCompose = remember { VoiceComposeManager(ttsManager) }
     val voiceDispatcher = remember(viewModel) {
         VoiceCommandDispatcher(viewModel, ttsManager)
     }
@@ -300,16 +300,15 @@ private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
         }
     }
 
-    LaunchedEffect(faceTracker) {
-        faceTracker.isGazingAtNotificationZone.collect { gazing ->
-            val currentTier = viewModel.uiState.value.tier
-            if (gazing && currentTier == InteractionTier.AMBIENT_HUD) {
-                viewModel.expandToNotificationCards()
-            } else if (!gazing && currentTier == InteractionTier.NOTIFICATION_CARDS) {
-                viewModel.collapseFromNotificationCards()
-            }
-        }
-    }
+    // Gaze-driven tier transitions are disabled — they were collapsing the
+    // panel whenever the user clicked something (their eyes naturally move
+    // off the notification zone during interaction, which fired the collapse).
+    // Tier changes are driven by gesture/voice/buttons now. Re-enable only
+    // once gaze tracking is debounced AND has an input-lockout during clicks.
+    //
+    // LaunchedEffect(faceTracker) {
+    //     faceTracker.isGazingAtNotificationZone.collect { gazing -> ... }
+    // }
 
     Box(modifier = Modifier.fillMaxSize()) {
         InteractionTierRouter(

@@ -91,6 +91,11 @@ class GeminiLiveManager {
                 modelName = MODEL,
                 generationConfig = liveGenerationConfig {
                     responseModality = ResponseModality.AUDIO
+                    // Cap output so the model stops generating once it's said
+                    // what it needs to, instead of padding out long replies.
+                    // 128 ≈ ~15-20 words spoken; matches the prompt instruction
+                    // to keep turns short and dramatically cuts time-to-last-byte.
+                    maxOutputTokens = 128
                 },
                 systemInstruction = content {
                     text(SYSTEM_PROMPT)
@@ -205,29 +210,14 @@ class GeminiLiveManager {
         // supported for Live models. Source: firebase.google.com/docs/ai-logic/live-api
         private const val MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
 
+        // Keep this short — every token here adds prefill latency to the
+        // model's first audio chunk on each turn. Push nuance into tool
+        // descriptions (EmailCommandTool.kt) instead.
         private val SYSTEM_PROMPT = """
-            You are XrMail's voice operator. The user is wearing a headset and cannot type.
-            Your job is to run the app FOR them, conversationally and with initiative.
-
-            Behavior rules:
-            - When anything the user says maps to a function, CALL IT IMMEDIATELY — do not
-              narrate first, do not ask permission. Speak a short confirmation after the call.
-            - You can chain calls. "Archive everything from promotions" → loop calls.
-              "Reply saying I'll be there" → call reply with body filled.
-            - When a command needs an email and one is already selected, USE THE SELECTED
-              ONE. Only ask for clarification if nothing is selected AND the referent is
-              truly ambiguous (multiple candidates in the context).
-            - Use the context block to answer inbox questions directly without a round trip.
-              "What's urgent?" → read priority from context, don't call search.
-              "Anything from Sarah?" → scan top-unread in context first.
-            - Reference emails by sender or subject, never by id.
-            - Use read_aloud for full body, summarize for a one-sentence gist.
-            - After a destructive action (archive, send), speak a warm one-clause
-              confirmation: "Archived." "Sent to Sarah." "Snoozed till tomorrow."
-            - If you are unsure WHICH function fits, prefer speak to clarify rather than
-              guessing. But lean toward action — the user is hands-free.
-            - Keep conversational turns under ~15 words unless the user asks for detail.
-            - You are warm and direct. Not chatty. Not robotic.
+            You're the voice agent for XrMail. User is hands-free in an XR headset.
+            When speech maps to a function, CALL IT — don't narrate. Speak one short
+            confirmation after. Default to the selected email when one exists.
+            Reference emails by sender or subject, never id. Keep replies under 12 words.
         """.trimIndent()
     }
 }
