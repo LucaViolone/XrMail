@@ -523,13 +523,13 @@ private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
         }
     }
 
-    // Gaze-driven AMBIENT_HUD expansion is now handled at the panel level by
-    // [com.xremail.app.ui.peripheral.GazeDwellNotificationBanner] using the
-    // OS hover stream + a 400 ms dwell + 800 ms post-interaction lockout
-    // sourced from `handGestures.lastInteractionMs`. The blendshape proxy in
-    // FaceAttentionTracker.isGazingAtNotificationZone is intentionally left
-    // disconnected at the activity level — the dwell logic now lives where
-    // the banner is and benefits from per-element hover routing.
+    // Tier escalation is gesture-only. Gaze NEVER expands or collapses a
+    // tier — the previous gaze-dwell-on-banner experiment (deleted along
+    // with GazeDwellNotificationBanner.kt) felt random because the user
+    // didn't realize a 400 ms look fired the same code path as a pinch.
+    // FaceAttentionTracker.isGazingAtNotificationZone is still computed
+    // for telemetry / future ambient-priority work, but is intentionally
+    // not wired to any tier transition.
 
     Box(modifier = Modifier.fillMaxSize()) {
         InteractionTierRouter(
