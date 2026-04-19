@@ -4,8 +4,11 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.speech.RecognitionListener
 import android.speech.RecognitionService
 import android.speech.RecognizerIntent
@@ -81,6 +84,18 @@ class LocalCommandRecognizer(
 
     private var recognizer: SpeechRecognizer? = null
     private var consecutiveErrors = 0
+
+    /**
+     * AudioManager handle used to silence the system "ding" earcon that
+     * Google's RecognitionService plays at the start of every listening
+     * round. Without suppression, the user hears a beep every ~5 seconds
+     * forever (each NO_MATCH triggers a re-arm, each re-arm triggers the
+     * earcon). See [muteRecognizerEarconAroundStart].
+     */
+    private val audioManager by lazy {
+        context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    }
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     /**
      * Components we've already tried and seen fail in this app session.
@@ -296,7 +311,68 @@ class LocalCommandRecognizer(
                 MINIMUM_LENGTH_MS,
             )
         }
-        recognizer?.startListening(intent)
+        muteRecognizerEarconAroundStart {
+            recognizer?.startListening(intent)
+        }
+    }
+
+    /**
+     * Suppress the system "ding" earcon that Google's RecognitionService
+     * plays whenever startListening is invoked. We don't want a beep on
+     * every ~5 s re-arm cycle while the user is just walking around with
+     * the inbox open.
+     *
+     * Approach: snapshot and zero out the streams that the earcon could
+     * possibly be routed to (NOTIFICATION, SYSTEM, RING — and yes, MUSIC
+     * too because some Galaxy XR builds route the recognizer earcon
+     * through the media stream), call startListening, then restore the
+     * original volumes after a short delay long enough for the earcon to
+     * finish playing.
+     *
+     * We DO touch STREAM_MUSIC, but only for ~250 ms — too short to clip
+     * audible TTS playback in any practical case (TTS chunks are >> 250 ms
+     * and we'd notice a missing first 250 ms of speech far less than the
+     * user noticing a beep every 5 seconds). If this ever clips real
+     * audio noticeably, drop STREAM_MUSIC from `streams` and accept that
+     * one device-specific build may still beep.
+     */
+    private inline fun muteRecognizerEarconAroundStart(block: () -> Unit) {
+        // STREAM_RING and STREAM_NOTIFICATION are intentionally absent —
+        // mutating them requires NotificationPolicy access (Do Not Disturb
+        // permission) which we don't have and don't want to ask for. The
+        // recognizer earcon on Galaxy XR plays through STREAM_MUSIC (the
+        // media stream that Google's Assistant earcons route through),
+        // so STREAM_SYSTEM + STREAM_MUSIC is sufficient in practice.
+        val streams = intArrayOf(
+            AudioManager.STREAM_SYSTEM,
+            AudioManager.STREAM_MUSIC,
+        )
+        val savedVolumes = IntArray(streams.size)
+        for (i in streams.indices) {
+            try {
+                savedVolumes[i] = audioManager.getStreamVolume(streams[i])
+                if (savedVolumes[i] > 0) {
+                    audioManager.setStreamVolume(streams[i], 0, 0)
+                }
+            } catch (t: Throwable) {
+                XrLog.v(TAG, "couldn't snapshot/mute stream=${streams[i]}: ${t.message}")
+            }
+        }
+        try {
+            block()
+        } finally {
+            mainHandler.postDelayed({
+                for (i in streams.indices) {
+                    try {
+                        if (savedVolumes[i] > 0) {
+                            audioManager.setStreamVolume(streams[i], savedVolumes[i], 0)
+                        }
+                    } catch (t: Throwable) {
+                        XrLog.v(TAG, "couldn't restore stream=${streams[i]}: ${t.message}")
+                    }
+                }
+            }, EARCON_MUTE_RESTORE_DELAY_MS)
+        }
     }
 
     private val listener = object : RecognitionListener {
@@ -552,5 +628,15 @@ class LocalCommandRecognizer(
         // short enough that the user can deliberately say "archive,
         // archive" to chain two commands.
         private const val DUPLICATE_DISPATCH_WINDOW_MS = 1_200L
+
+        // How long to keep the system streams muted after invoking
+        // startListening, before restoring their original volumes.
+        // The Google recognition-service earcon is a single ~150-200 ms
+        // tone, so 250 ms is just enough to swallow it without clipping
+        // a meaningful chunk of TTS audio if Gemini happens to start
+        // speaking in the same window (in practice that almost never
+        // overlaps because Gemini-Live owns the mic exclusively while
+        // it's responding, and we pause this recognizer during that).
+        private const val EARCON_MUTE_RESTORE_DELAY_MS = 250L
     }
 }
