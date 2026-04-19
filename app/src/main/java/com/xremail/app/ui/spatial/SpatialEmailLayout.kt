@@ -183,7 +183,7 @@ private fun CollapsePill(onClick: () -> Unit) {
     ) {
         Icon(
             imageVector = Icons.Default.KeyboardArrowDown,
-            contentDescription = "Collapse to Triage",
+            contentDescription = "Collapse to Inbox",
             tint = XREmailColors.onSurfaceVariant,
             modifier = Modifier.size(18.dp),
         )

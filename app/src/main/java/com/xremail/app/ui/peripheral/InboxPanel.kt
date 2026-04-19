@@ -48,7 +48,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 
 @Composable
-fun TriagePanel(
+fun InboxPanel(
     emails: List<Email>,
     selectedEmail: Email?,
     ttsState: TTSManager.PlaybackState,
@@ -100,7 +100,7 @@ fun TriagePanel(
             }
 
             Text(
-                text = "Triage",
+                text = "Inbox",
                 style = MaterialTheme.typography.labelMedium,
                 color = XREmailColors.onSurfaceVariant,
             )

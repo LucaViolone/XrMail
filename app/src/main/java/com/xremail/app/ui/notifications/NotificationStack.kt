@@ -201,7 +201,7 @@ fun NotificationBanner(
 /**
  * Expanded notification cards list — shown in the NOTIFICATION_CARDS tier.
  * Each card is swipeable for archive/snooze directly, or tappable to
- * open in Triage with that email pre-selected.
+ * open in Inbox with that email pre-selected.
  *
  * Auto-collapses when gaze moves away (handled by the tier router +
  * FaceAttentionTracker gaze zone logic).
@@ -214,7 +214,7 @@ fun NotificationCardStack(
     onArchiveEmail: (Email) -> Unit,
     onSnoozeEmail: (Email) -> Unit,
     onCollapseToHud: () -> Unit,
-    onExpandToTriage: () -> Unit,
+    onExpandToInbox: () -> Unit,
     modifier: Modifier = Modifier,
     /**
      * Head-tilt-driven scroll delta from [com.xremail.app.tracking.TiltScrollController].
@@ -250,25 +250,25 @@ fun NotificationCardStack(
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(18.dp))
+            .clip(RoundedCornerShape(16.dp))
             .background(XREmailColors.surface.copy(alpha = 0.94f))
-            .padding(12.dp)
+            .padding(10.dp)
             .verticalScroll(scrollState),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+        verticalArrangement = Arrangement.spacedBy(7.dp),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // Left header: tap to expand the stack into the TRIAGE panel.
+            // Left header: tap to expand the stack into the INBOX panel.
             // Gives a keyboard/mouse-reachable forward path that doesn't require
             // a pinch gesture — needed on the emulator and as a fallback when
             // hand tracking loses the user's hand.
             Row(
                 modifier = Modifier
                     .clip(RoundedCornerShape(8.dp))
-                    .clickable(onClick = onExpandToTriage)
+                    .clickable(onClick = onExpandToInbox)
                     .padding(horizontal = 4.dp, vertical = 2.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -332,7 +332,7 @@ fun NotificationCardStack(
                 color = XREmailColors.onSurfaceDim,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable(onClick = onExpandToTriage)
+                    .clickable(onClick = onExpandToInbox)
                     .padding(vertical = 6.dp),
             )
         }

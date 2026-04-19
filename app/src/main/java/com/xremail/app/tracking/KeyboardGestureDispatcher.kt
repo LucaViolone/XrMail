@@ -18,7 +18,7 @@ class KeyboardGestureDispatcher(
 
         val KEY_MAPPINGS: List<Mapping> = listOf(
             Mapping(KeyEvent.KEYCODE_1, "1", "Expand to Notifications"),
-            Mapping(KeyEvent.KEYCODE_2, "2", "Expand to Triage"),
+            Mapping(KeyEvent.KEYCODE_2, "2", "Expand to Inbox"),
             Mapping(KeyEvent.KEYCODE_3, "3", "Expand to Focus"),
             Mapping(KeyEvent.KEYCODE_0, "0", "Collapse to HUD"),
             Mapping(KeyEvent.KEYCODE_DEL, "Bksp", "Collapse one tier back"),
@@ -44,7 +44,7 @@ class KeyboardGestureDispatcher(
                 viewModel.expandToNotificationCards(); true
             }
             KeyEvent.KEYCODE_2 -> {
-                viewModel.expandToTriage(); true
+                viewModel.expandToInbox(); true
             }
             KeyEvent.KEYCODE_3 -> {
                 viewModel.expandToFocus(); true
@@ -54,8 +54,8 @@ class KeyboardGestureDispatcher(
             }
             KeyEvent.KEYCODE_DEL -> {
                 when (tier) {
-                    InteractionTier.FOCUS -> viewModel.collapseToTriage()
-                    InteractionTier.TRIAGE -> viewModel.collapseToNotificationCards()
+                    InteractionTier.FOCUS -> viewModel.collapseToInbox()
+                    InteractionTier.INBOX -> viewModel.collapseToNotificationCards()
                     InteractionTier.NOTIFICATION_CARDS -> viewModel.collapseFromNotificationCards()
                     InteractionTier.AMBIENT_HUD -> {}
                 }

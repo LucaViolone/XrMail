@@ -56,12 +56,14 @@ class VoiceCommandDispatcher(
             }
 
             is EmailCommandTool.Command.Reply -> {
-                val body = command.body
-                if (body.isNullOrBlank()) {
-                    viewModel.startCompose()
-                } else {
-                    viewModel.voiceReply(body)
-                }
+                // Treat a model-issued reply(body=...) the same as a
+                // draft_reply: NEVER auto-send. Always stamp the body
+                // into the voice compose UI for review + readback first,
+                // then wait for an explicit "send it" before firing.
+                // This is the safety contract we promise the user — no
+                // email ever leaves the device without an explicit
+                // confirmation, regardless of which tool the model picked.
+                handleDraftReply(body = command.body)
             }
 
             is EmailCommandTool.Command.Search -> {
@@ -79,11 +81,19 @@ class VoiceCommandDispatcher(
             }
 
             is EmailCommandTool.Command.DraftReply -> {
-                viewModel.startVoiceCompose()
+                handleDraftReply(body = command.body)
+            }
+
+            is EmailCommandTool.Command.ReviseDraft -> {
+                handleReviseDraft(command.body)
+            }
+
+            EmailCommandTool.Command.CancelDraft -> {
+                handleCancelDraft()
             }
 
             is EmailCommandTool.Command.SendDraft -> {
-                viewModel.sendDraft()
+                handleSendDraft()
             }
 
             is EmailCommandTool.Command.FilterCategory -> {
@@ -91,11 +101,11 @@ class VoiceCommandDispatcher(
             }
 
             EmailCommandTool.Command.ShowInbox -> {
-                // Re-point: "show inbox" should land on TRIAGE (the actual list
-                // view), not collapse to the ambient banner. The banner is
-                // ambient/walk-mode, the inbox is the list of emails.
-                XrLog.tier(viewModel.uiState.value.tier.name, "TRIAGE", "voice.show_inbox")
-                viewModel.expandToTriage()
+                // Re-point: "show inbox" should land on INBOX tier (the actual
+                // list view), not collapse to the ambient banner. The banner
+                // is ambient/walk-mode, the inbox tier is the list of emails.
+                XrLog.tier(viewModel.uiState.value.tier.name, "INBOX", "voice.show_inbox")
+                viewModel.expandToInbox()
             }
 
             EmailCommandTool.Command.GoBack -> {
@@ -126,6 +136,79 @@ class VoiceCommandDispatcher(
         }
     }
 
+    // ---------------------------------------------------------------------------
+    // Voice compose flow
+    //
+    // The contract:
+    //   1. draft_reply(body=...) / reply(body=...)  → voiceReply(body)
+    //      stamps the draft into the UI; we TTS the body so the user hears
+    //      what's about to be sent. Critically, NO send happens here.
+    //   2. revise_draft(body=...)  → reviseVoiceDraft(body); TTS again.
+    //   3. cancel_draft  → cancelCompose; TTS "cancelled".
+    //   4. send_draft  → only fires if there's a draft; TTS "sent" on
+    //      success or "no draft to send" if the model misfired.
+    //
+    // The extra TTS calls deliberately overlap with whatever short
+    // confirmation Gemini Live speaks (per its system prompt). Local TTS
+    // wins the race because it starts before the SDK's network round-trip
+    // for audio, so the user hears the draft body before Gemini's
+    // "Drafted, want me to send it?" — which is the order they need.
+    // ---------------------------------------------------------------------------
+
+    private fun handleDraftReply(body: String?) {
+        val selected = viewModel.uiState.value.selectedEmail
+        if (selected == null) {
+            tts.speak("Open an email first.")
+            return
+        }
+        val cleaned = body?.trim().orEmpty()
+        viewModel.voiceReply(cleaned)
+        // After voiceReply, the UI is in voiceComposing mode with the
+        // draft visible. Read the actual body the user is about to send,
+        // not a meta confirmation — they need to verify the words.
+        val actualBody = viewModel.uiState.value.voiceDraft?.draftText.orEmpty()
+        if (actualBody.isNotBlank()) {
+            tts.speak(actualBody)
+        } else {
+            tts.speak("I couldn't draft that. Try again?")
+        }
+    }
+
+    private fun handleReviseDraft(newBody: String) {
+        val state = viewModel.uiState.value
+        if (!state.isVoiceComposing || state.voiceDraft == null) {
+            XrLog.w(TAG, "revise_draft with no active draft — ignoring")
+            tts.speak("No draft to revise.")
+            return
+        }
+        viewModel.reviseVoiceDraft(newBody.trim())
+        tts.speak(newBody)
+    }
+
+    private fun handleCancelDraft() {
+        val state = viewModel.uiState.value
+        if (!state.isVoiceComposing) {
+            XrLog.v(TAG, "cancel_draft with no active draft — no-op")
+            return
+        }
+        viewModel.cancelCompose()
+        tts.speak("Cancelled.")
+    }
+
+    private fun handleSendDraft() {
+        val sent = viewModel.sendDraft()
+        if (sent) {
+            tts.speak("Sent.")
+        } else {
+            // Common cause: the model called send_draft prematurely
+            // (without a prior draft_reply) or the user said "send it"
+            // when no draft was up. Tell the user, don't pop a fake
+            // success toast.
+            XrLog.w(TAG, "send_draft with no draft on screen — refusing")
+            tts.speak("No draft to send. Say reply first.")
+        }
+    }
+
     private fun handleExpandTier(rawTarget: String) {
         val current = viewModel.uiState.value.tier.name
         when (rawTarget.trim().lowercase()) {
@@ -134,16 +217,16 @@ class VoiceCommandDispatcher(
                 viewModel.expandToNotificationCards()
             }
             "triage", "inbox", "list" -> {
-                XrLog.tier(current, "TRIAGE", "voice.expand_tier($rawTarget)")
-                viewModel.expandToTriage()
+                XrLog.tier(current, "INBOX", "voice.expand_tier($rawTarget)")
+                viewModel.expandToInbox()
             }
             "focus", "reader", "read", "open" -> {
                 XrLog.tier(current, "FOCUS", "voice.expand_tier($rawTarget)")
                 viewModel.expandToFocus()
             }
             else -> {
-                Log.w(TAG, "expand_tier got unknown target='$rawTarget' — defaulting to TRIAGE")
-                viewModel.expandToTriage()
+                Log.w(TAG, "expand_tier got unknown target='$rawTarget' — defaulting to INBOX")
+                viewModel.expandToInbox()
             }
         }
     }
@@ -152,11 +235,11 @@ class VoiceCommandDispatcher(
         val current = viewModel.uiState.value.tier
         when (current) {
             InteractionTier.FOCUS -> {
-                XrLog.tier("FOCUS", "TRIAGE", "voice.collapse_one_tier")
-                viewModel.collapseToTriage()
+                XrLog.tier("FOCUS", "INBOX", "voice.collapse_one_tier")
+                viewModel.collapseToInbox()
             }
-            InteractionTier.TRIAGE -> {
-                XrLog.tier("TRIAGE", "NOTIFICATION_CARDS", "voice.collapse_one_tier")
+            InteractionTier.INBOX -> {
+                XrLog.tier("INBOX", "NOTIFICATION_CARDS", "voice.collapse_one_tier")
                 viewModel.collapseToNotificationCards()
             }
             InteractionTier.NOTIFICATION_CARDS -> {

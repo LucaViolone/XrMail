@@ -49,7 +49,7 @@ import com.xremail.app.tracking.SecondaryHandGestures
 import com.xremail.app.ui.notifications.NotificationCardStack
 import com.xremail.app.ui.peripheral.AmbientHud
 import com.xremail.app.ui.peripheral.CollapseAffordance
-import com.xremail.app.ui.peripheral.TriagePanel
+import com.xremail.app.ui.peripheral.InboxPanel
 import com.xremail.app.ui.peripheral.VoiceComposeOverlay
 import com.xremail.app.ui.peripheral.VoicePrompt
 import com.xremail.app.ui.theme.XREmailColors
@@ -124,10 +124,10 @@ fun InteractionTierRouter(
     onKeyDown: (Int) -> Boolean = { false },
     onExpandToNotifications: () -> Unit,
     onCollapseFromNotifications: () -> Unit,
-    onExpandToTriage: () -> Unit,
+    onExpandToInbox: () -> Unit,
     onCollapseToHud: () -> Unit,
     onExpandToFocus: () -> Unit,
-    onCollapseToTriage: () -> Unit,
+    onCollapseToInbox: () -> Unit,
     onEmailSelected: (Email) -> Unit,
     onOpenFromNotification: (Email) -> Unit,
     onCategorySelected: (EmailCategory?) -> Unit,
@@ -193,9 +193,10 @@ fun InteractionTierRouter(
                 localRecognizerState = localRecognizerState,
                 voiceComposeState = voiceComposeState,
                 voiceDraft = voiceDraft,
+                openPalmProgress = openPalmProgress,
                 onExpandToNotifications = onExpandToNotifications,
                 onCollapseFromNotifications = onCollapseFromNotifications,
-                onExpandToTriage = onExpandToTriage,
+                onExpandToInbox = onExpandToInbox,
                 onCollapseToHud = onCollapseToHud,
                 onExpandToFocus = onExpandToFocus,
                 onEmailSelected = onEmailSelected,
@@ -257,13 +258,68 @@ fun InteractionTierRouter(
             behavior = followBehavior,
             dimensions = trackedDims,
         ) {
+            // Tier-dependent panel size. AMBIENT_HUD is a small ambient
+            // banner; NOTIFICATION_CARDS is a medium peripheral preview;
+            // INBOX is the full-size reading panel. We resize the panel
+            // itself (via the SubspaceModifier) instead of constraining
+            // content because rendering small content inside a giant
+            // phantom panel wastes spatial real estate and looks weird.
+            // Modifier changes do NOT remount the SpatialPanel entity —
+            // only the followTarget / behavior / dimensions identity
+            // matters for that, and those are still remember()'d above.
+            // Per-tier panel width is fixed (a panel that grows wider on
+            // each tier transition feels jarring), but per-tier HEIGHT is
+            // content-driven for the tiers where empty space wastes
+            // peripheral real estate.
+            val panelWidth = when (uiState.tier) {
+                InteractionTier.AMBIENT_HUD -> 320.dp
+                InteractionTier.NOTIFICATION_CARDS -> 380.dp
+                else -> 480.dp
+            }
+            // NOTIFICATION_CARDS height = chrome (header + voice prompt +
+            // collapse affordance + footer hint + outer padding) plus the
+            // actual visible card count. Without this, an inbox with 1
+            // unread email would render in a panel sized for 5 — exactly
+            // the "still really big with empty space around them" the
+            // user complained about after collapsing back from FOCUS.
+            //
+            // Magic numbers tuned to the current NotificationCardStack /
+            // NotificationCard layout. If those padding/sizes change,
+            // bump CHROME_DP / PER_CARD_DP accordingly.
+            val visibleNotifCards = uiState.unreadCount
+                .coerceAtMost(5)
+                .coerceAtLeast(1)
+            val panelHeight = when (uiState.tier) {
+                // Just a small ambient banner + voice prompt + hint.
+                // 240 had ~70dp of dead space below the banner; 200 is
+                // tight to the actual content.
+                InteractionTier.AMBIENT_HUD -> 200.dp
+                InteractionTier.NOTIFICATION_CARDS -> {
+                    val CHROME_DP = 180
+                    val PER_CARD_DP = 70
+                    val computed = CHROME_DP + visibleNotifCards * PER_CARD_DP
+                    // Clamp: never grow past 540 (one cards-worth shy of
+                    // the old 460 hard cap was still cramped at 5; 540
+                    // gives the 5th card room to breathe). Never shrink
+                    // below 240 — below that the header row + hint look
+                    // squashed even with 0 cards.
+                    computed.coerceIn(240, 540).dp
+                }
+                else -> 680.dp
+            }
+            // Recenter horizontal offset so smaller panels don't drift
+            // way out into the user's far-right peripheral. Bigger panel
+            // → push further right so it doesn't crowd central vision.
+            val panelOffsetX = when (uiState.tier) {
+                InteractionTier.AMBIENT_HUD -> 200.dp
+                InteractionTier.NOTIFICATION_CARDS -> 220.dp
+                else -> 260.dp
+            }
             SpatialPanel(
                 modifier = SubspaceModifier
-                    // Bigger panel so individual notification cards have
-                    // room to be readable and tappable in peripheral.
-                    .width(480.dp)
-                    .height(680.dp)
-                    .offset(x = 260.dp, y = (-40).dp, z = (-340).dp),
+                    .width(panelWidth)
+                    .height(panelHeight)
+                    .offset(x = panelOffsetX, y = (-40).dp, z = (-340).dp),
             ) {
                 // Hide content during FOCUS so the panel "looks empty" but
                 // the entity stays mounted — no remount glitch on collapse.
@@ -287,7 +343,7 @@ fun InteractionTierRouter(
                             openPalmProgress = openPalmProgress,
                             onExpandToNotifications = onExpandToNotifications,
                             onCollapseFromNotifications = onCollapseFromNotifications,
-                            onExpandToTriage = onExpandToTriage,
+                            onExpandToInbox = onExpandToInbox,
                             onCollapseToHud = onCollapseToHud,
                             onExpandToFocus = onExpandToFocus,
                             onEmailSelected = onEmailSelected,
@@ -325,7 +381,7 @@ fun InteractionTierRouter(
                 onForward = onForward,
                 onSend = onSend,
                 onCancelCompose = onCancelCompose,
-                onCollapse = onCollapseToTriage,
+                onCollapse = onCollapseToInbox,
             )
         }
     }
@@ -389,7 +445,7 @@ private fun PeripheralTierContent(
     openPalmProgress: Float,
     onExpandToNotifications: () -> Unit,
     onCollapseFromNotifications: () -> Unit,
-    onExpandToTriage: () -> Unit,
+    onExpandToInbox: () -> Unit,
     onCollapseToHud: () -> Unit,
     @Suppress("UNUSED_PARAMETER") onExpandToFocus: () -> Unit,
     onEmailSelected: (Email) -> Unit,
@@ -424,7 +480,7 @@ private fun PeripheralTierContent(
                     progress = openPalmProgress,
                     label = when (tier) {
                         InteractionTier.NOTIFICATION_CARDS -> "Open palm to dismiss"
-                        InteractionTier.TRIAGE -> "Open palm to back out"
+                        InteractionTier.INBOX -> "Open palm to back out"
                         InteractionTier.FOCUS -> "Open palm to back out"
                         else -> "Open palm to collapse"
                     },
@@ -455,7 +511,7 @@ private fun PeripheralTierContent(
                 )
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    text = "Pinch + hold to expand · tap banner to open",
+                    text = "Pinch + hold to expand",
                     color = XREmailColors.onSurfaceDim,
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -470,19 +526,19 @@ private fun PeripheralTierContent(
                     onArchiveEmail = onArchiveEmail,
                     onSnoozeEmail = onSnoozeEmail,
                     onCollapseToHud = onCollapseFromNotifications,
-                    onExpandToTriage = onExpandToTriage,
+                    onExpandToInbox = onExpandToInbox,
                     modifier = Modifier.fillMaxWidth().weight(1f, fill = false),
                 )
                 Text(
-                    text = "Hold pinch on card to open · open-palm hold to collapse",
+                    text = "Pinch a card to open it",
                     color = XREmailColors.onSurfaceDim,
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
 
-            InteractionTier.TRIAGE -> {
+            InteractionTier.INBOX -> {
                 Box(modifier = Modifier.fillMaxWidth().fillMaxHeight()) {
-                    TriagePanel(
+                    InboxPanel(
                         emails = prioritySortedEmails,
                         selectedEmail = uiState.selectedEmail,
                         ttsState = ttsState,
@@ -532,9 +588,10 @@ private fun FallbackTierContent(
     localRecognizerState: LocalCommandRecognizer.State,
     voiceComposeState: VoiceComposeManager.ComposeState,
     voiceDraft: VoiceDraft?,
+    openPalmProgress: Float,
     onExpandToNotifications: () -> Unit,
     onCollapseFromNotifications: () -> Unit,
-    onExpandToTriage: () -> Unit,
+    onExpandToInbox: () -> Unit,
     onCollapseToHud: () -> Unit,
     onExpandToFocus: () -> Unit,
     onEmailSelected: (Email) -> Unit,
@@ -580,9 +637,10 @@ private fun FallbackTierContent(
                 localRecognizerState = localRecognizerState,
                 voiceComposeState = voiceComposeState,
                 voiceDraft = voiceDraft,
+                openPalmProgress = openPalmProgress,
                 onExpandToNotifications = onExpandToNotifications,
                 onCollapseFromNotifications = onCollapseFromNotifications,
-                onExpandToTriage = onExpandToTriage,
+                onExpandToInbox = onExpandToInbox,
                 onCollapseToHud = onCollapseToHud,
                 onExpandToFocus = onExpandToFocus,
                 onEmailSelected = onEmailSelected,

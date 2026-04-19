@@ -26,7 +26,14 @@ private const val TAG = "HandGestures"
 // hand was at rest, firing spurious PINCH_SELECT events. 2.5cm requires a
 // genuinely deliberate pinch.
 private const val PINCH_DISTANCE_THRESHOLD = 0.025f
-private const val PINCH_HOLD_DURATION_MS = 600L
+// Pinch-hold duration before we fire PINCH_HOLD_EXPAND (tier expansion).
+// Was 600ms which felt sluggish — the user explicitly asked for "panels to
+// expand and collapse very quickly and responsively". 350ms is the sweet
+// spot: long enough that an incidental pinch (released in <100ms) won't
+// trip it thanks to the PINCH_TAP_MIN_HOLD_MS filter, short enough that
+// the deliberate "I want to expand" hold completes before the user
+// notices any latency.
+private const val PINCH_HOLD_DURATION_MS = 350L
 // Minimum pinch hold time before a release counts as PINCH_SELECT (tap).
 // Single-frame "ghost pinches" from tracking jitter clear in <50ms; a
 // deliberate tap is at least ~80ms. This filters out the noise.
@@ -52,10 +59,15 @@ private const val OPEN_PALM_DEDUP_WINDOW_MS = 1_500L
 // 6cm to 8cm so a relaxed hand at rest (fingers naturally splayed when
 // arm is at user's side) doesn't satisfy the threshold.
 private const val OPEN_PALM_FINGER_EXTEND_MIN_M = 0.08f
-// Hold duration for collapse. Bumped from 700ms to 1000ms so a brief
-// open palm during, say, a wave or ambient hand motion doesn't fire
-// the collapse gesture.
-private const val OPEN_PALM_HOLD_DURATION_MS = 1000L
+// Hold duration for collapse. The user wants tier transitions to feel
+// snappy ("very quickly and responsively"). 1000ms felt deliberate but
+// sluggish — by the time the collapse fired the user had already started
+// looking at what they wanted to see. 600ms is fast but still well past
+// the noise floor: a stray open palm during a wave or pointing gesture
+// is rarely held that long, and the OPEN_PALM_FINGER_EXTEND_MIN_M filter
+// (8cm extension) plus the always-visible CollapseAffordance ring make
+// accidental fires obvious enough to release before they trigger.
+private const val OPEN_PALM_HOLD_DURATION_MS = 600L
 // Once OPEN_PALM_HOLD fires we lock it out until the user fully closes the
 // hand again — without this, holding the palm extended for 2s fires once
 // then re-fires at every dedup-window boundary as the timer keeps ticking.

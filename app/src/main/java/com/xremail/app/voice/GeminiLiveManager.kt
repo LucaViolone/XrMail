@@ -164,10 +164,16 @@ class GeminiLiveManager {
                 generationConfig = liveGenerationConfig {
                     responseModality = ResponseModality.AUDIO
 
-                    // Cap output so the model stops generating once it's said
-                    // what it needs to. ~64 tokens ≈ one short confirmation
-                    // sentence. Lower than this and it cuts off mid-word.
-                    maxOutputTokens = 64
+                    // Cap output high enough to comfortably cover a 1–4
+                    // sentence email draft (the longest legitimate single
+                    // turn the model produces). Action-mode confirmations
+                    // ("Done.", "Drafted, want me to send it?") are
+                    // policed by the SYSTEM_PROMPT, not the token cap —
+                    // the cap exists to prevent runaway generation, not
+                    // to enforce terseness. ~64 was too aggressive: it
+                    // cut email drafts off mid-sentence so the user could
+                    // never hear a full readback.
+                    maxOutputTokens = 320
 
                     // Slightly conservative temperature: makes the model
                     // commit to the first sensible response instead of
@@ -461,17 +467,35 @@ class GeminiLiveManager {
         // CPU on the audio thread).
         private const val LIVE_OUTPUT_SAMPLE_RATE_HZ = 24_000
 
-        // Keep this short — every token here adds prefill latency to the
-        // model's first audio chunk on each turn. Push nuance into tool
-        // descriptions (EmailCommandTool.kt) instead.
+        // The system prompt encodes TWO modes the model needs to switch
+        // between fluidly:
         //
-        // The first sentence is the load-bearing one: it teaches the model
-        // to PREFER tool calls over verbal narration, which is the single
-        // biggest win for perceived snappiness — instead of "Sure, let me
-        // open that email for you, here it is..." we get an instant
-        // function call followed by a one-word confirmation.
+        //   ACTION MODE (default): the user gave a command that maps to a
+        //   tool — fire the tool, say a 4-6 word confirmation, done. This
+        //   is what makes the assistant feel responsive instead of chatty.
+        //
+        //   COMPOSE MODE (entered when the user asks for a reply / draft /
+        //   message): the model has to actually WRITE the email body. It
+        //   calls draft_reply(body=COMPLETE TEXT), then says ONE short
+        //   confirmation like "Drafted, send it?". The UI reads the draft
+        //   itself via local TTS so the model doesn't burn ~5s saying it
+        //   twice. Revisions go through revise_draft; sends through
+        //   send_draft (only after the user explicitly confirms).
+        //
+        // The "ask one tight clarifying question" line is the escape hatch
+        // when the model genuinely doesn't know what to do — better than
+        // calling the wrong tool, much better than rambling.
+        //
+        // Every additional token here adds prefill latency to the first
+        // audio chunk on each turn, so we keep the prose dense.
         private val SYSTEM_PROMPT = """
-            You are XrMail's hands-free voice agent. Always call a function when the user's intent maps to one — never narrate the action. Speak at most one short confirmation after, max 6 words. Default to the selected email when one exists. Reference emails by sender or subject, never id. If unsure, ask one tight clarifying question.
+            You are XrMail's hands-free voice agent. Two modes:
+
+            ACTION MODE (default): when the user's intent maps to a tool, call it immediately — never narrate. Then speak ONE confirmation, max 6 words ("Archived." "Snoozed till tomorrow." "Opening inbox.").
+
+            COMPOSE MODE (when the user asks to reply, write back, draft, respond, or send a message): write the FULL reply yourself in 1-4 short sentences, natural and ready-to-send. Pass the complete text in draft_reply(body=...). Then say ONE short confirmation like "Drafted, want me to send it?" — DO NOT speak the draft body, the UI reads it back. If the user revises, call revise_draft(body=...) with the COMPLETE rewritten body. Only call send_draft after the user explicitly confirms ("send it", "yes", "fire it").
+
+            Always default to the selected email when one exists. Reference emails by sender or subject, never id. If you genuinely don't know what to do, ask ONE tight clarifying question — never guess wrong.
         """.trimIndent()
     }
 }

@@ -547,10 +547,10 @@ private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
             onKeyDown = keyboardDispatcher::onKeyDown,
             onExpandToNotifications = viewModel::expandToNotificationCards,
             onCollapseFromNotifications = viewModel::collapseFromNotificationCards,
-            onExpandToTriage = viewModel::expandToTriage,
+            onExpandToInbox = viewModel::expandToInbox,
             onCollapseToHud = viewModel::collapseToHud,
             onExpandToFocus = viewModel::expandToFocus,
-            onCollapseToTriage = viewModel::collapseToTriage,
+            onCollapseToInbox = viewModel::collapseToInbox,
             onEmailSelected = viewModel::selectEmail,
             onOpenFromNotification = viewModel::openFromNotification,
             onCategorySelected = viewModel::filterByCategory,
@@ -561,18 +561,18 @@ private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
             onSnooze = viewModel::snoozeSelected,
             onSnoozeEmail = viewModel::snoozeEmail,
             onForward = viewModel::forwardSelected,
-            onSend = viewModel::sendDraft,
+            onSend = { viewModel.sendDraft() },
             onCancelCompose = viewModel::cancelCompose,
             onDismissToast = viewModel::dismissToast,
         )
 
         // Show the 2D pill *only* when the main panel actually owns the user's
-        // foveal view (TRIAGE / FOCUS). For peripheral / lazy-follow tiers the
+        // foveal view (INBOX / FOCUS). For peripheral / lazy-follow tiers the
         // main panel is offscreen-or-tiny and we'd rather render the pill
         // head-locked in front of the user — see [HeadLockedGestureFeedback].
         // Without this gate, both copies would collect from the same
         // SharedFlow and the user would feel a double-haptic on every pinch.
-        val showInline2dFeedback = uiState.tier == InteractionTier.TRIAGE ||
+        val showInline2dFeedback = uiState.tier == InteractionTier.INBOX ||
             uiState.tier == InteractionTier.FOCUS
         if (showInline2dFeedback) {
             GestureFeedbackOverlay(gestures = handGestures.gestures)

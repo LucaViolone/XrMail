@@ -14,7 +14,7 @@ import kotlinx.coroutines.launch
 
 enum class AppMode { READING, COMPOSING }
 
-enum class InteractionTier { AMBIENT_HUD, NOTIFICATION_CARDS, TRIAGE, FOCUS }
+enum class InteractionTier { AMBIENT_HUD, NOTIFICATION_CARDS, INBOX, FOCUS }
 
 data class VoiceDraft(
     val recipientName: String = "",
@@ -127,21 +127,32 @@ class EmailViewModel(
         _uiState.update { it.copy(highlightedNotificationId = emailId) }
     }
 
+    /**
+     * User pinched directly on a notification card. Open that email in the
+     * full spatial reader (FOCUS) — that's the "fuller view" the user
+     * asked for: dedicated panels for the email body, contact card, and
+     * actions instead of the email-list-with-preview INBOX layout.
+     *
+     * Going straight to FOCUS instead of stopping at INBOX is the whole
+     * point of the pinch gesture: the user already picked which email
+     * they care about, so there's no value in dropping them on a list
+     * view that has the email selected on one side.
+     */
     fun openFromNotification(email: Email) {
         selectEmail(email)
         _uiState.update {
             it.copy(
-                tier = InteractionTier.TRIAGE,
+                tier = InteractionTier.FOCUS,
                 highlightedNotificationId = null,
                 isGazingAtNotifications = false,
             )
         }
     }
 
-    fun expandToTriage() {
+    fun expandToInbox() {
         _uiState.update {
             it.copy(
-                tier = InteractionTier.TRIAGE,
+                tier = InteractionTier.INBOX,
                 highlightedNotificationId = null,
                 isGazingAtNotifications = false,
             )
@@ -173,8 +184,8 @@ class EmailViewModel(
         }
     }
 
-    fun collapseToTriage() {
-        _uiState.update { it.copy(tier = InteractionTier.TRIAGE) }
+    fun collapseToInbox() {
+        _uiState.update { it.copy(tier = InteractionTier.INBOX) }
     }
 
     fun setGazingAtNotifications(gazing: Boolean) {
@@ -328,9 +339,23 @@ class EmailViewModel(
         }
     }
 
-    fun voiceReply(briefInstruction: String) {
+    /**
+     * Stamp a complete, model-generated draft body into the voice compose
+     * UI. Used by the voice dispatcher when Gemini calls draft_reply with
+     * a full body — the user reviews the draft (TTS reads it back), then
+     * confirms or revises.
+     *
+     * If [body] is blank we fall back to the email's [Email.suggestedReply]
+     * boilerplate so the user still sees something to react to instead of
+     * an empty card. That happens when the user says "reply" without any
+     * actual content ("hey gemini reply") — better to show the suggested
+     * reply than to silently fail.
+     */
+    fun voiceReply(body: String) {
         val email = _uiState.value.selectedEmail ?: return
-        val draft = email.suggestedReply ?: "Thank you for your email. $briefInstruction"
+        val draft = body.takeIf { it.isNotBlank() }
+            ?: email.suggestedReply
+            ?: "Thank you for your email."
         _uiState.update {
             it.copy(
                 isVoiceComposing = true,
@@ -340,6 +365,29 @@ class EmailViewModel(
                     draftText = draft,
                     isGenerating = false,
                     confidence = email.replyConfidence,
+                ),
+            )
+        }
+    }
+
+    /**
+     * Replace the in-progress draft body with [newBody] without resetting
+     * recipient / subject. Triggered by Gemini's revise_draft tool when
+     * the user says "change it to ..." / "make it shorter" / etc.
+     *
+     * If no draft is in progress this is a no-op (logged) so a stray
+     * model call after a send/cancel doesn't resurrect the compose UI.
+     */
+    fun reviseVoiceDraft(newBody: String) {
+        val current = _uiState.value.voiceDraft
+        if (current == null || !_uiState.value.isVoiceComposing) {
+            return
+        }
+        _uiState.update {
+            it.copy(
+                voiceDraft = current.copy(
+                    draftText = newBody,
+                    isGenerating = false,
                 ),
             )
         }
@@ -363,7 +411,7 @@ class EmailViewModel(
     }
 
     // ---------------------------------------------------------------------------
-    // Triage actions
+    // Inbox actions
     // ---------------------------------------------------------------------------
 
     fun archiveEmail(email: Email) {
@@ -419,8 +467,21 @@ class EmailViewModel(
         _uiState.update { it.copy(mode = AppMode.COMPOSING) }
     }
 
-    fun sendDraft() {
+    /**
+     * Voice-driven "send it". Only fires the actual send if the user
+     * actually has a draft in progress — without this guard, a stray
+     * Gemini send_draft call (or a misheard "send" while idle) would
+     * fire confirmSend() with no draft and pop a misleading "Sent to ..."
+     * toast for an email the user never reviewed. Returns true if a send
+     * actually fired so the caller can speak the right confirmation.
+     */
+    fun sendDraft(): Boolean {
+        val state = _uiState.value
+        if (!state.isVoiceComposing || state.voiceDraft?.draftText.isNullOrBlank()) {
+            return false
+        }
         confirmSend()
+        return true
     }
 
     fun setStarred(messageId: String, starred: Boolean) {

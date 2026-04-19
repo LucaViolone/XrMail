@@ -8,9 +8,8 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -55,7 +54,7 @@ import com.xremail.app.ui.theme.XREmailColors
 /**
  * Compact notification card for the gaze-expanded notification stack.
  * Designed for peripheral use while walking — high contrast, large touch
- * targets, swipeable for quick archive/snooze without entering Triage.
+ * targets, swipeable for quick archive/snooze without entering Inbox.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -130,7 +129,6 @@ fun NotificationCard(
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun NotificationCardContent(
     email: Email,
@@ -144,12 +142,14 @@ private fun NotificationCardContent(
         Priority.IGNORE -> XREmailColors.onSurfaceDim
     }
 
-    // HOLD-TO-OPEN: a quick gaze+pinch tap from the OS used to immediately
-    // fire onClick and open the email (the user reported "it shouldn't
-    // open just on me looking at one of the emails"). We now bind onClick
-    // to a NO-OP and require a long-press (~500ms hold) to actually open.
-    // This filters out incidental pinches and matches the rest of the
-    // tier-escalation model where deeper actions need a deliberate hold.
+    // PINCH-TO-OPEN: a single deliberate pinch on a card opens that email
+    // straight into FOCUS view. Earlier we required a long-press to filter
+    // ghost pinches from hand-tracking jitter, but with the tightened
+    // SecondaryHandGestures thresholds (PINCH_DISTANCE_THRESHOLD=2.5cm +
+    // 80ms minimum hold for taps), incidental pinches almost never fire
+    // anymore. Restoring single-pinch makes "look at email -> pinch ->
+    // see it big" feel like one fluid motion instead of two distinct
+    // steps, which is what the user asked for.
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
 
@@ -164,28 +164,27 @@ private fun NotificationCardContent(
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
             .background(bgColor)
-            .combinedClickable(
+            .clickable(
                 interactionSource = interactionSource,
                 indication = null,
-                onClick = { /* intentionally no-op — see hold-to-open note above */ },
-                onLongClick = onClick,
+                onClick = onClick,
             )
-            .padding(horizontal = 14.dp, vertical = 16.dp),
+            .padding(horizontal = 12.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
             modifier = Modifier
-                .width(5.dp)
-                .height(52.dp)
-                .clip(RoundedCornerShape(3.dp))
+                .width(4.dp)
+                .height(40.dp)
+                .clip(RoundedCornerShape(2.dp))
                 .background(priorityColor),
         )
 
-        Spacer(Modifier.width(12.dp))
+        Spacer(Modifier.width(10.dp))
 
         Box(
             modifier = Modifier
-                .size(44.dp)
+                .size(36.dp)
                 .clip(CircleShape)
                 .background(priorityColor.copy(alpha = 0.2f)),
             contentAlignment = Alignment.Center,

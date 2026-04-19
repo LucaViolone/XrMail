@@ -12,12 +12,12 @@ private const val TAG = "GestureMapper"
  *
  * Tier escalation model (designed for walking/on-the-go use):
  *   AMBIENT_HUD: pinch = expand to notification cards
- *   NOTIFICATION_CARDS: pinch = open highlighted email in triage,
+ *   NOTIFICATION_CARDS: pinch = open highlighted email in the inbox panel,
  *                       swipe-left = archive from card, swipe-right = snooze,
  *                       swipe-down = collapse back to HUD
- *   TRIAGE: swipe-left = archive, swipe-right = snooze, pinch = select + TTS,
+ *   INBOX: swipe-left = archive, swipe-right = snooze, pinch = select + TTS,
  *           pinch-hold = expand to focus, swipe-down = collapse to HUD
- *   FOCUS: swipe-down = collapse to triage, pinch = standard select
+ *   FOCUS: swipe-down = collapse to inbox, pinch = standard select
  */
 class GestureToActionMapper(
     private val viewModel: EmailViewModel,
@@ -36,7 +36,7 @@ class GestureToActionMapper(
         when (tier) {
             InteractionTier.AMBIENT_HUD -> handleAmbientGesture(gesture)
             InteractionTier.NOTIFICATION_CARDS -> handleNotificationCardsGesture(gesture)
-            InteractionTier.TRIAGE -> handleTriageGesture(gesture)
+            InteractionTier.INBOX -> handleInboxGesture(gesture)
             InteractionTier.FOCUS -> handleFocusGesture(gesture)
         }
     }
@@ -44,15 +44,15 @@ class GestureToActionMapper(
     private fun collapseOneTier(tier: InteractionTier) {
         when (tier) {
             InteractionTier.FOCUS -> {
-                Log.d(TAG, "  -> collapseToTriage() (open-palm)")
-                viewModel.collapseToTriage()
+                Log.d(TAG, "  -> collapseToInbox() (open-palm)")
+                viewModel.collapseToInbox()
             }
-            InteractionTier.TRIAGE -> {
+            InteractionTier.INBOX -> {
                 Log.d(TAG, "  -> collapseToHud() (open-palm, skipping cards)")
-                // From the user's perspective TRIAGE collapses straight back
+                // From the user's perspective INBOX collapses straight back
                 // to the ambient banner, not to the cards (which are a
                 // peripheral preview, not a deeper state). Mirrors what
-                // SWIPE_DOWN_DISMISS does in the TRIAGE handler.
+                // SWIPE_DOWN_DISMISS does in the INBOX handler.
                 viewModel.collapseToHud()
             }
             InteractionTier.NOTIFICATION_CARDS -> {
@@ -92,8 +92,8 @@ class GestureToActionMapper(
                     Log.d(TAG, "  -> openFromNotification(${email.id})")
                     viewModel.openFromNotification(email)
                 } else {
-                    Log.d(TAG, "  -> expandToTriage()")
-                    viewModel.expandToTriage()
+                    Log.d(TAG, "  -> expandToInbox()")
+                    viewModel.expandToInbox()
                 }
             }
             SecondaryHandGestures.Gesture.SWIPE_LEFT_ARCHIVE -> {
@@ -117,8 +117,8 @@ class GestureToActionMapper(
                 viewModel.collapseFromNotificationCards()
             }
             SecondaryHandGestures.Gesture.PINCH_HOLD_EXPAND -> {
-                Log.d(TAG, "  -> expandToTriage()")
-                viewModel.expandToTriage()
+                Log.d(TAG, "  -> expandToInbox()")
+                viewModel.expandToInbox()
             }
             SecondaryHandGestures.Gesture.SWIPE_UP_STAR -> {
                 val highlighted = viewModel.uiState.value.highlightedNotificationId
@@ -135,7 +135,7 @@ class GestureToActionMapper(
         }
     }
 
-    private fun handleTriageGesture(gesture: SecondaryHandGestures.Gesture) {
+    private fun handleInboxGesture(gesture: SecondaryHandGestures.Gesture) {
         when (gesture) {
             SecondaryHandGestures.Gesture.SWIPE_LEFT_ARCHIVE -> {
                 Log.d(TAG, "  -> archiveSelected()")
@@ -173,12 +173,12 @@ class GestureToActionMapper(
     private fun handleFocusGesture(gesture: SecondaryHandGestures.Gesture) {
         when (gesture) {
             SecondaryHandGestures.Gesture.SWIPE_DOWN_DISMISS -> {
-                Log.d(TAG, "  -> collapseToTriage()")
-                viewModel.collapseToTriage()
+                Log.d(TAG, "  -> collapseToInbox()")
+                viewModel.collapseToInbox()
             }
             SecondaryHandGestures.Gesture.PINCH_HOLD_EXPAND -> {
-                Log.d(TAG, "  -> collapseToTriage() (pinch-hold escape)")
-                viewModel.collapseToTriage()
+                Log.d(TAG, "  -> collapseToInbox() (pinch-hold escape)")
+                viewModel.collapseToInbox()
             }
             SecondaryHandGestures.Gesture.PINCH_SELECT -> {
                 /* standard select — handled by existing panel tap */

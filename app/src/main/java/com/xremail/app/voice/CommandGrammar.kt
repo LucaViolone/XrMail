@@ -172,7 +172,7 @@ object CommandGrammar {
         Pattern(
             label = "expand_inbox",
             regex = Regex("""^(show\s+(me\s+)?(my\s+)?(the\s+)?inbox|open\s+(the\s+)?inbox|inbox)$"""),
-            build = { EmailCommandTool.Command.ExpandTier("triage") },
+            build = { EmailCommandTool.Command.ExpandTier("inbox") },
         ),
         Pattern(
             label = "expand_focus",
@@ -237,13 +237,29 @@ object CommandGrammar {
         ),
         Pattern(
             label = "send_draft",
-            regex = Regex("""^(send|send\s+it|send\s+the?\s+(draft|reply|message)|fire\s+it\s+off)$"""),
+            regex = Regex("""^(send|send\s+it|send\s+the?\s+(draft|reply|message)|fire\s+it\s+off|yes\s+send(\s+it)?|go\s+ahead\s+and\s+send)$"""),
             build = { EmailCommandTool.Command.SendDraft(emailId = null) },
         ),
+        // Compose cancel / discard. Local fast-path so the user can bail
+        // out of a draft instantly without waiting for Gemini's
+        // round-trip — important because the most common time someone
+        // says "cancel" / "never mind" is RIGHT after hearing the TTS
+        // readback of a draft they don't like, and any lag here feels
+        // like the assistant is ignoring them.
+        Pattern(
+            label = "cancel_draft",
+            regex = Regex("""^(cancel|cancel\s+(it|that|the\s+draft)|never\s+mind|nevermind|forget\s+(it|that)|throw\s+(it|that|the\s+draft)\s+(out|away)|discard|scrap\s+(it|that))$"""),
+            build = { EmailCommandTool.Command.CancelDraft },
+        ),
+        // Bare "reply" / "draft a reply" with no body. The model would
+        // also handle this, but the local path is ~1s faster — important
+        // because the user usually says "reply" then immediately keeps
+        // talking ("reply, tell her I'll be late"), and we want the UI
+        // to flip into compose mode before the second clause arrives.
         Pattern(
             label = "compose_reply",
             regex = Regex("""^(reply|respond|compose(\s+(a\s+)?reply)?|write\s+(a\s+)?reply|write\s+back)$"""),
-            build = { EmailCommandTool.Command.DraftReply(emailId = null, tone = null) },
+            build = { EmailCommandTool.Command.DraftReply(emailId = null, tone = null, body = null) },
         ),
         Pattern(
             label = "filter_category",

@@ -27,7 +27,25 @@ object EmailCommandTool {
         data class Search(val query: String) : Command()
         data class ReadAloud(val emailId: String?) : Command()
         data class Summarize(val emailId: String?) : Command()
-        data class DraftReply(val emailId: String?, val tone: String?) : Command()
+        /**
+         * Generate a fully-written draft reply that the UI shows + reads back.
+         * The model must pass a complete, well-formed [body] (one short paragraph,
+         * 1–4 sentences). [tone] is informational only — the body should already
+         * reflect it. Nothing sends until the user confirms with [SendDraft].
+         */
+        data class DraftReply(val emailId: String?, val tone: String?, val body: String?) : Command()
+        /**
+         * Replace the in-progress draft body with [body]. Use when the user
+         * says "change X to Y" / "make it shorter" / "rewrite it more
+         * formally". The new body fully overwrites the old one — the model
+         * is responsible for producing the COMPLETE revised draft, not a diff.
+         */
+        data class ReviseDraft(val body: String) : Command()
+        /**
+         * Discard the in-progress draft without sending. "cancel that",
+         * "never mind", "throw it out".
+         */
+        data object CancelDraft : Command()
         data class SendDraft(val emailId: String?) : Command()
         data class FilterCategory(val category: String) : Command()
         data object ShowInbox : Command()
@@ -36,7 +54,7 @@ object EmailCommandTool {
         data class Speak(val text: String) : Command()
         /**
          * Voice-driven tier escalation. Mirrors the gesture / gaze-dwell paths
-         * so the user can say "open notifications" / "show triage" / "focus
+         * so the user can say "open notifications" / "show inbox" / "focus
          * mode" instead of pinching.
          */
         data class ExpandTier(val target: String) : Command()
@@ -121,17 +139,47 @@ object EmailCommandTool {
 
     private val draftReply = FunctionDeclaration(
         "draft_reply",
-        "Generate a draft reply for review (does not send).",
+        "Write a complete reply draft for the user to review. " +
+            "Pass the FULL body text in `body` — 1 to 4 short sentences, " +
+            "natural and conversational, ready to send as-is. The UI will " +
+            "show the draft and read it back; do NOT also speak the draft " +
+            "yourself. After this call returns, just say a short " +
+            "confirmation like \"Drafted, want me to send it?\". " +
+            "Does NOT send — wait for the user to say \"send it\" or call " +
+            "send_draft. Use this whenever the user asks you to reply, " +
+            "respond, write back, or compose a message.",
         mapOf(
-            "emailId" to Schema.string("Email id, optional."),
-            "tone" to Schema.string("Tone of the draft, e.g. formal, friendly."),
+            "emailId" to Schema.string("Email id, optional. Defaults to the selected email."),
+            "tone" to Schema.string("Tone hint, e.g. 'friendly', 'formal', 'apologetic'. Optional."),
+            "body" to Schema.string("Complete draft body, ready to send. Required."),
         ),
         optionalParameters = listOf("emailId", "tone"),
     )
 
+    private val reviseDraft = FunctionDeclaration(
+        "revise_draft",
+        "Replace the in-progress draft with a revised version. Use when " +
+            "the user says \"change X to Y\", \"make it shorter\", \"rewrite " +
+            "more formally\", \"actually say ...\", etc. Pass the COMPLETE " +
+            "rewritten body in `body` — not a diff. The UI will re-read it " +
+            "back. Only valid while a draft is on screen (after draft_reply).",
+        mapOf("body" to Schema.string("Complete revised draft body.")),
+    )
+
+    private val cancelDraft = FunctionDeclaration(
+        "cancel_draft",
+        "Discard the in-progress draft without sending. Use when the user " +
+            "says \"cancel\", \"never mind\", \"throw it out\", \"forget it\".",
+        emptyMap(),
+    )
+
     private val sendDraft = FunctionDeclaration(
         "send_draft",
-        "Send the draft currently on screen.",
+        "Actually send the draft currently on screen. Only valid AFTER " +
+            "draft_reply has been called and the user has explicitly " +
+            "confirmed (\"send it\", \"yes send\", \"fire it off\"). NEVER " +
+            "call this without the user's explicit confirmation — the user " +
+            "must hear the draft read back first.",
         mapOf("emailId" to Schema.string("Email id being replied to, optional.")),
         optionalParameters = listOf("emailId"),
     )
@@ -144,9 +192,9 @@ object EmailCommandTool {
 
     private val showInbox = FunctionDeclaration(
         "show_inbox",
-        "Open the inbox triage view (the full email list with previews). Use when the " +
+        "Open the inbox view (the full email list with previews). Use when the " +
             "user says 'show me my inbox', 'open inbox', 'let me see my emails'. This " +
-            "expands past the ambient banner into the full triage panel.",
+            "expands past the ambient banner into the full inbox panel.",
         emptyMap(),
     )
 
@@ -154,10 +202,11 @@ object EmailCommandTool {
         "expand_tier",
         "Escalate the UI to a deeper interaction tier without reading a specific email. " +
             "Use when the user wants to go further into the app: 'open notifications', " +
-            "'show triage', 'focus mode', 'open my email panel'. Pass the target tier as " +
-            "one of: 'notifications', 'triage', 'focus'.",
+            "'show inbox', 'focus mode', 'open my email panel'. Pass the target tier as " +
+            "one of: 'notifications', 'inbox', 'focus'. ('triage' also accepted as a " +
+            "legacy alias for 'inbox'.)",
         mapOf("target" to Schema.string(
-            "One of 'notifications', 'triage', or 'focus'."
+            "One of 'notifications', 'inbox', or 'focus'."
         )),
     )
 
@@ -196,7 +245,7 @@ object EmailCommandTool {
      *
      * - `goBack` — superseded by `collapseOneTier`, which has clearer
      *   semantics ("move one step toward the ambient HUD").
-     * - `showInbox` — superseded by `expandTier(target='triage')`. One tool
+     * - `showInbox` — superseded by `expandTier(target='inbox')`. One tool
      *   handles every escalation instead of two overlapping ones.
      * - `speak` — encouraged the model to call a tool just to say something,
      *   when it could (and should) just respond conversationally. Removing
@@ -205,8 +254,8 @@ object EmailCommandTool {
     val tool: Tool = Tool.functionDeclarations(
         listOf(
             selectEmail, archiveEmail, snoozeEmail, forwardEmail, reply, search,
-            readAloud, summarize, draftReply, sendDraft, filterCategory,
-            refresh, expandTier, collapseOneTier,
+            readAloud, summarize, draftReply, reviseDraft, cancelDraft, sendDraft,
+            filterCategory, refresh, expandTier, collapseOneTier,
         ),
     )
 
@@ -223,7 +272,9 @@ object EmailCommandTool {
         "search" -> args["query"]?.let { Command.Search(it) }
         "read_aloud" -> Command.ReadAloud(args["emailId"])
         "summarize" -> Command.Summarize(args["emailId"])
-        "draft_reply" -> Command.DraftReply(args["emailId"], args["tone"])
+        "draft_reply" -> Command.DraftReply(args["emailId"], args["tone"], args["body"])
+        "revise_draft" -> args["body"]?.let { Command.ReviseDraft(it) }
+        "cancel_draft" -> Command.CancelDraft
         "send_draft" -> Command.SendDraft(args["emailId"])
         "filter_category" -> args["category"]?.let { Command.FilterCategory(it) }
         "show_inbox" -> Command.ShowInbox
