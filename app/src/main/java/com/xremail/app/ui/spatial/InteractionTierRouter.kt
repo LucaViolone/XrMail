@@ -81,6 +81,10 @@ fun InteractionTierRouter(
     onSend: () -> Unit,
     onCancelCompose: () -> Unit,
     onDismissToast: () -> Unit,
+    /** Fires a simulated voice reply — shown as "Voice" button in the Focus action bar. */
+    onVoiceReply: (() -> Unit)? = null,
+    onConfirmVoiceSend: (() -> Unit)? = null,
+    onCancelVoice: (() -> Unit)? = null,
 ) {
     // Single shared lazy head-follow offset drives all peripheral tiers so
     // they drift together when the user turns their head. Defaults to 0
@@ -256,6 +260,11 @@ fun InteractionTierRouter(
                     onSend = onSend,
                     onCancelCompose = onCancelCompose,
                     onCollapse = onCollapseToTriage,
+                    onVoiceReply = onVoiceReply,
+                    voiceDraft = voiceDraft ?: uiState.voiceDraft,
+                    voiceComposeState = voiceComposeState,
+                    onConfirmVoiceSend = onConfirmVoiceSend,
+                    onCancelVoice = onCancelVoice,
                 )
             }
         }

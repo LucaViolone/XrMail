@@ -39,9 +39,12 @@ import com.xremail.app.ui.compose.ComposeScreen
 import com.xremail.app.ui.context.ContextSidebar
 import com.xremail.app.ui.inbox.InboxScreen
 import com.xremail.app.ui.notifications.NotificationPill
+import com.xremail.app.ui.peripheral.VoiceComposeOverlay
 import com.xremail.app.ui.reader.EmailReaderScreen
 import com.xremail.app.ui.theme.XREmailColors
 import com.xremail.app.viewmodel.AppMode
+import com.xremail.app.viewmodel.VoiceDraft
+import com.xremail.app.voice.VoiceComposeManager
 
 @Composable
 fun SpatialEmailLayout(
@@ -62,6 +65,13 @@ fun SpatialEmailLayout(
     onSend: () -> Unit,
     onCancelCompose: () -> Unit,
     onCollapse: (() -> Unit)? = null,
+    /** Fires a simulated voice instruction — shows up as "Voice" button in action bar. */
+    onVoiceReply: (() -> Unit)? = null,
+    /** Voice draft + state for the inline compose overlay (emulator-friendly). */
+    voiceDraft: VoiceDraft? = null,
+    voiceComposeState: VoiceComposeManager.ComposeState = VoiceComposeManager.ComposeState.IDLE,
+    onConfirmVoiceSend: (() -> Unit)? = null,
+    onCancelVoice: (() -> Unit)? = null,
     onGestureOverlay: @Composable () -> Unit = {},
 ) {
     SpatialCurvedRow(
@@ -136,7 +146,26 @@ fun SpatialEmailLayout(
                     onArchive = onArchive,
                     onSnooze = onSnooze,
                     onForward = onForward,
+                    onVoiceReply = onVoiceReply,
                 )
+            }
+
+            // Voice compose overlay — floats above the reader in Focus tier.
+            // Send/Cancel buttons are wired so emulator users can finish the flow
+            // without a pinch gesture.
+            if (voiceDraft != null && voiceComposeState != VoiceComposeManager.ComposeState.IDLE) {
+                Orbiter(
+                    position = ContentEdge.Top,
+                    offset = 96.dp,
+                    alignment = Alignment.CenterHorizontally,
+                ) {
+                    VoiceComposeOverlay(
+                        draft = voiceDraft,
+                        composeState = voiceComposeState,
+                        onConfirmSend = onConfirmVoiceSend,
+                        onCancel = onCancelVoice,
+                    )
+                }
             }
 
             if (onCollapse != null) {

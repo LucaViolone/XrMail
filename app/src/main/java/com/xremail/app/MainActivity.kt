@@ -319,6 +319,11 @@ private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
             onSend = viewModel::sendDraft,
             onCancelCompose = viewModel::cancelCompose,
             onDismissToast = viewModel::dismissToast,
+            // Voice compose — "Voice" button fires a canned instruction so you can
+            // exercise the full GENERATING → draft → send flow without a mic/headset.
+            onVoiceReply = { viewModel.voiceReply("I'll get back to you by Friday") },
+            onConfirmVoiceSend = viewModel::sendDraft,
+            onCancelVoice = viewModel::cancelCompose,
         )
 
         GestureFeedbackOverlay(gestures = handGestures.gestures)
