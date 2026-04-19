@@ -196,6 +196,7 @@ Co-founder & CTO, NeuralPath AI""",
                 ActionItem("d2", "Review NeuralPath AI publications", false),
             ),
             threadCount = 1,
+            hasSchedulingIntent = true,
         ),
         Email(
             id = "5",

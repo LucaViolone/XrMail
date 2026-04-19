@@ -39,6 +39,20 @@ android {
     buildFeatures {
         compose = true
     }
+
+    packaging {
+        resources {
+            excludes += "/META-INF/DEPENDENCIES"
+            excludes += "/META-INF/LICENSE"
+            excludes += "/META-INF/LICENSE.txt"
+            excludes += "/META-INF/license.txt"
+            excludes += "/META-INF/NOTICE"
+            excludes += "/META-INF/NOTICE.txt"
+            excludes += "/META-INF/notice.txt"
+            excludes += "/META-INF/ASL2.0"
+            excludes += "/META-INF/*.kotlin_module"
+        }
+    }
 }
 
 dependencies {
@@ -78,11 +92,14 @@ dependencies {
     implementation(libs.androidx.xr.material3)
     implementation(libs.androidx.xr.arcore)
 
+    // Firebase AI Logic — Gemini Live bidirectional audio session
     implementation(platform(libs.firebase.bom))
     implementation(libs.firebase.ai)
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.0")
 
-    testImplementation("junit:junit:4.13.2")
-    testImplementation("org.jetbrains.kotlin:kotlin-test:2.1.10")
-    testImplementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.0")
+    // firebase-ai exposes JsonObject in its public API
+    implementation(libs.kotlinx.serialization.json)
+
+    // Google Calendar API
+    implementation(libs.google.api.client)
+    implementation(libs.google.api.services.calendar)
 }

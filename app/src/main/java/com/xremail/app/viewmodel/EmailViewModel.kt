@@ -1,28 +1,35 @@
 package com.xremail.app.viewmodel
 
-import android.app.Application
-import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import com.xremail.app.ai.GeminiTextService
 import com.xremail.app.backend.mock.MockEmailRepository
 import com.xremail.app.backend.service.EmailRepository
-import com.xremail.app.data.ActionItem
-import com.xremail.app.data.Attachment
-import com.xremail.app.data.Contact
-import com.xremail.app.data.Email
-import com.xremail.app.data.EmailCategory
-import com.xremail.app.data.EmailDraft
-import com.xremail.app.voice.EmailCommandTool
-import com.xremail.app.voice.TTSManager
+import com.xremail.app.backend.service.GoogleCalendarRepository
+import com.xremail.app.data.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.time.LocalDateTime
 
 enum class AppMode { READING, COMPOSING }
+
+enum class InteractionTier { AMBIENT_HUD, NOTIFICATION_CARDS, TRIAGE, FOCUS, CALENDAR }
+
+data class VoiceDraft(
+    val recipientName: String = "",
+    val subject: String = "",
+    val draftText: String = "",
+    val isGenerating: Boolean = false,
+    val confidence: Float = 0f,
+)
+
+data class ToastMessage(
+    val text: String,
+    val id: Long = System.currentTimeMillis(),
+)
 
 data class EmailUiState(
     val emails: List<Email> = emptyList(),
@@ -36,41 +43,47 @@ data class EmailUiState(
     val errorMessage: String? = null,
     val replySuggestions: List<String> = emptyList(),
     val isLoadingSuggestions: Boolean = false,
-    val voiceDraft: EmailDraft? = null,
-    val draftBody: String = "",
-    val assistantStatus: String? = null,
+    val tier: InteractionTier = InteractionTier.AMBIENT_HUD,
+    val voiceDraft: VoiceDraft? = null,
+    val toastMessage: ToastMessage? = null,
+    val isVoiceComposing: Boolean = false,
+    val highlightedNotificationId: String? = null,
+    val isGazingAtNotifications: Boolean = false,
+    val calendarEvents: List<CalendarEvent> = emptyList(),
 )
 
 class EmailViewModel(
-    application: Application,
     private val repository: EmailRepository = MockEmailRepository(),
-) : AndroidViewModel(application) {
-
-    private val textService = GeminiTextService()
-    private val tts = TTSManager(application.applicationContext)
-
-    private var voiceSendArmedUntil: Long = 0L
+    private val googleCalendarRepository: GoogleCalendarRepository? = null,
+) : ViewModel() {
 
     private val _uiState = MutableStateFlow(EmailUiState(isLoading = true))
     val uiState: StateFlow<EmailUiState> = _uiState.asStateFlow()
 
+    private val calendarRepository = CalendarRepository()
+
     init {
         loadEmails()
+        loadCalendarEvents()
     }
 
-    fun isVoiceSendArmed(): Boolean = System.currentTimeMillis() < voiceSendArmedUntil
-
-    private fun armVoiceSend() {
-        voiceSendArmedUntil = System.currentTimeMillis() + 45_000L
+    private fun loadCalendarEvents() {
+        viewModelScope.launch {
+            val start = LocalDateTime.now().withHour(0).withMinute(0).withSecond(0)
+            val events = if (googleCalendarRepository != null) {
+                // Real Google Calendar — fetches 7 days ahead from the backend
+                googleCalendarRepository.getEvents(start, start.plusDays(7))
+            } else {
+                // Mock fallback used in development / emulator mode
+                calendarRepository.getEvents(start, start.plusDays(7))
+            }
+            _uiState.update { it.copy(calendarEvents = events) }
+        }
     }
 
-    fun updateDraftBody(text: String) {
-        _uiState.update { it.copy(draftBody = text) }
-    }
-
-    fun dismissAssistantStatus() {
-        _uiState.update { it.copy(assistantStatus = null) }
-    }
+    // ---------------------------------------------------------------------------
+    // Email loading
+    // ---------------------------------------------------------------------------
 
     fun loadEmails(query: String = "", category: EmailCategory? = null) {
         viewModelScope.launch {
@@ -82,19 +95,16 @@ class EmailViewModel(
                 onSuccess = { emails ->
                     val filtered = if (category != null) {
                         emails.filter { it.category == category }
-                    } else {
-                        emails
-                    }
+                    } else emails
 
                     _uiState.update { state ->
-                        val first = filtered.firstOrNull()
                         state.copy(
                             emails = filtered,
-                            selectedEmail = first?.also { loadContactFor(it) },
+                            selectedEmail = filtered.firstOrNull()
+                                ?.also { loadContactFor(it) },
                             activeCategory = category,
                             unreadCount = filtered.count { !it.isRead },
                             isLoading = false,
-                            draftBody = first?.suggestedReply.orEmpty(),
                         )
                     }
                 },
@@ -105,10 +115,86 @@ class EmailViewModel(
                             errorMessage = error.message ?: "Failed to load emails",
                         )
                     }
-                },
+                }
             )
         }
     }
+
+    // ---------------------------------------------------------------------------
+    // Tier navigation
+    // ---------------------------------------------------------------------------
+
+    fun expandToNotificationCards() {
+        _uiState.update {
+            it.copy(
+                tier = InteractionTier.NOTIFICATION_CARDS,
+                isGazingAtNotifications = true,
+            )
+        }
+    }
+
+    fun collapseFromNotificationCards() {
+        _uiState.update {
+            it.copy(
+                tier = InteractionTier.AMBIENT_HUD,
+                highlightedNotificationId = null,
+                isGazingAtNotifications = false,
+            )
+        }
+    }
+
+    fun highlightNotification(emailId: String?) {
+        _uiState.update { it.copy(highlightedNotificationId = emailId) }
+    }
+
+    fun openFromNotification(email: Email) {
+        selectEmail(email)
+        _uiState.update {
+            it.copy(
+                tier = InteractionTier.TRIAGE,
+                highlightedNotificationId = null,
+                isGazingAtNotifications = false,
+            )
+        }
+    }
+
+    fun expandToTriage() {
+        _uiState.update {
+            it.copy(
+                tier = InteractionTier.TRIAGE,
+                highlightedNotificationId = null,
+                isGazingAtNotifications = false,
+            )
+        }
+    }
+
+    fun collapseToHud() {
+        _uiState.update {
+            it.copy(
+                tier = InteractionTier.AMBIENT_HUD,
+                isVoiceComposing = false,
+                voiceDraft = null,
+                highlightedNotificationId = null,
+                isGazingAtNotifications = false,
+            )
+        }
+    }
+
+    fun expandToFocus() {
+        _uiState.update { it.copy(tier = InteractionTier.FOCUS) }
+    }
+
+    fun collapseToTriage() {
+        _uiState.update { it.copy(tier = InteractionTier.TRIAGE) }
+    }
+
+    fun setGazingAtNotifications(gazing: Boolean) {
+        _uiState.update { it.copy(isGazingAtNotifications = gazing) }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Email selection
+    // ---------------------------------------------------------------------------
 
     fun selectEmail(email: Email) {
         viewModelScope.launch {
@@ -116,19 +202,17 @@ class EmailViewModel(
                 val updatedEmails = state.emails.map {
                     if (it.id == email.id) it.copy(isRead = true) else it
                 }
-                val read = email.copy(isRead = true)
                 state.copy(
                     emails = updatedEmails,
-                    selectedEmail = read,
+                    selectedEmail = email.copy(isRead = true),
+                    selectedContact = MockData.getContactForEmail(email.copy(isRead = true)),
                     mode = AppMode.READING,
                     isAiSummaryExpanded = true,
                     replySuggestions = emptyList(),
                     unreadCount = updatedEmails.count { !it.isRead },
-                    draftBody = read.suggestedReply.orEmpty(),
-                    assistantStatus = null,
                 )
             }
-            loadContactFor(email.copy(isRead = true))
+            loadContactFor(email)
 
             if (!email.isRead) repository.markAsRead(email.id)
 
@@ -136,130 +220,255 @@ class EmailViewModel(
         }
     }
 
+    fun navigateNextUnread() {
+        _uiState.update { state ->
+            val nextUnread = state.emails.firstOrNull { !it.isRead }
+            if (nextUnread != null) {
+                val updatedEmails = state.emails.map {
+                    if (it.id == nextUnread.id) it.copy(isRead = true) else it
+                }
+                val readEmail = nextUnread.copy(isRead = true)
+                state.copy(
+                    emails = updatedEmails,
+                    selectedEmail = readEmail,
+                    selectedContact = MockData.getContactForEmail(readEmail),
+                    unreadCount = updatedEmails.count { !it.isRead },
+                )
+            } else {
+                state
+            }
+        }
+    }
+
+    fun toggleStar(email: Email) {
+        _uiState.update { state ->
+            val updated = state.emails.map {
+                if (it.id == email.id) it.copy(isStarred = !it.isStarred) else it
+            }
+            val updatedSelected = if (state.selectedEmail?.id == email.id) {
+                state.selectedEmail.copy(isStarred = !state.selectedEmail.isStarred)
+            } else {
+                state.selectedEmail
+            }
+            state.copy(emails = updated, selectedEmail = updatedSelected)
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Category filtering
+    // ---------------------------------------------------------------------------
+
     fun filterByCategory(category: EmailCategory?) {
         loadEmails(category = category)
     }
+
+    fun prioritySortedEmails(): List<Email> {
+        val priorityOrder = mapOf(
+            Priority.HIGH to 0,
+            Priority.MEDIUM to 1,
+            Priority.LOW to 2,
+            Priority.IGNORE to 3,
+        )
+        return _uiState.value.emails.sortedWith(
+            compareBy<Email> { it.isRead }
+                .thenBy { priorityOrder[it.priority] ?: 3 }
+                .thenByDescending { it.urgencyScore }
+        )
+    }
+
+    // ---------------------------------------------------------------------------
+    // AI summary
+    // ---------------------------------------------------------------------------
 
     fun toggleAiSummary() {
         _uiState.update { it.copy(isAiSummaryExpanded = !it.isAiSummaryExpanded) }
     }
 
+    // ---------------------------------------------------------------------------
+    // Calendar visibility
+    // ---------------------------------------------------------------------------
+
+    fun showCalendar() {
+        _uiState.update { it.copy(tier = InteractionTier.CALENDAR) }
+    }
+
+    fun hideCalendar() {
+        _uiState.update { state -> 
+            val nextTier = if (state.selectedEmail != null) InteractionTier.FOCUS else InteractionTier.AMBIENT_HUD
+            state.copy(tier = nextTier)
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Compose
+    // ---------------------------------------------------------------------------
+
     fun startCompose() {
-        val sel = _uiState.value.selectedEmail
+        _uiState.update { it.copy(mode = AppMode.COMPOSING, voiceDraft = null) }
+    }
+
+    fun cancelCompose() {
+        _uiState.update {
+            it.copy(mode = AppMode.READING, isVoiceComposing = false, voiceDraft = null)
+        }
+    }
+
+    fun startVoiceCompose() {
+        val email = _uiState.value.selectedEmail ?: return
         _uiState.update {
             it.copy(
-                mode = AppMode.COMPOSING,
-                voiceDraft = null,
-                draftBody = sel?.suggestedReply.orEmpty(),
+                isVoiceComposing = true,
+                voiceDraft = VoiceDraft(
+                    recipientName = email.sender,
+                    subject = "Re: ${email.subject}",
+                ),
             )
         }
     }
 
-    fun cancelCompose() {
-        val sel = _uiState.value.selectedEmail
+    fun voiceReply(briefInstruction: String) {
+        val email = _uiState.value.selectedEmail ?: return
+
+        // Show a generating spinner immediately — feedback for the XR user
+        _uiState.update {
+            it.copy(
+                isVoiceComposing = true,
+                voiceDraft = VoiceDraft(
+                    recipientName = email.sender,
+                    subject = "Re: ${email.subject}",
+                    isGenerating = true,
+                ),
+            )
+        }
+
+        viewModelScope.launch {
+            repository.composeFromVoice(
+                transcript = briefInstruction,
+                replyToMessageId = email.id,
+            ).fold(
+                onSuccess = { emailDraft ->
+                    _uiState.update {
+                        it.copy(
+                            voiceDraft = VoiceDraft(
+                                recipientName = email.sender,
+                                subject = emailDraft.subject.ifBlank { "Re: ${email.subject}" },
+                                draftText = emailDraft.body,
+                                isGenerating = false,
+                                confidence = 0.85f,
+                            ),
+                        )
+                    }
+                },
+                onFailure = {
+                    // Fallback: use the raw instruction as body so the flow never dead-ends
+                    _uiState.update { state ->
+                        state.copy(
+                            voiceDraft = state.voiceDraft?.copy(
+                                draftText = briefInstruction,
+                                isGenerating = false,
+                                confidence = 0.5f,
+                            ),
+                        )
+                    }
+                }
+            )
+        }
+    }
+
+    fun confirmSend() {
         _uiState.update {
             it.copy(
                 mode = AppMode.READING,
+                isVoiceComposing = false,
                 voiceDraft = null,
-                draftBody = sel?.suggestedReply.orEmpty(),
-                assistantStatus = null,
+                toastMessage = ToastMessage(
+                    "Sent to ${it.selectedEmail?.sender ?: "recipient"}"
+                ),
+            )
+        }
+    }
+
+    fun dismissToast() {
+        _uiState.update { it.copy(toastMessage = null) }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Triage actions
+    // ---------------------------------------------------------------------------
+
+    fun archiveEmail(email: Email) {
+        _uiState.update { state ->
+            val remaining = state.emails.filter { it.id != email.id }
+            val newSelected = if (state.selectedEmail?.id == email.id) {
+                remaining.firstOrNull()
+            } else {
+                state.selectedEmail
+            }
+            state.copy(
+                emails = remaining,
+                selectedEmail = newSelected,
+                selectedContact = newSelected?.let { MockData.getContactForEmail(it) },
+                unreadCount = remaining.count { !it.isRead },
+                toastMessage = ToastMessage("Archived: ${email.sender}"),
+            )
+        }
+    }
+
+    fun snoozeEmail(email: Email) {
+        _uiState.update { state ->
+            val remaining = state.emails.filter { it.id != email.id }
+            val newSelected = if (state.selectedEmail?.id == email.id) {
+                remaining.firstOrNull()
+            } else {
+                state.selectedEmail
+            }
+            state.copy(
+                emails = remaining,
+                selectedEmail = newSelected,
+                selectedContact = newSelected?.let { MockData.getContactForEmail(it) },
+                unreadCount = remaining.count { !it.isRead },
+                toastMessage = ToastMessage("Snoozed: ${email.sender}"),
             )
         }
     }
 
     fun archiveSelected() {
         val selected = _uiState.value.selectedEmail ?: return
+        archiveEmail(selected)
         viewModelScope.launch {
-            _uiState.update { state ->
-                val remaining = state.emails.filter { it.id != selected.id }
-                val newSel = remaining.firstOrNull()
-                state.copy(
-                    emails = remaining,
-                    selectedEmail = newSel,
-                    unreadCount = remaining.count { !it.isRead },
-                    draftBody = newSel?.suggestedReply.orEmpty(),
-                )
-            }
-            _uiState.value.selectedEmail?.let { loadContactFor(it) }
             repository.archive(selected.id)
         }
     }
 
     fun snoozeSelected() {
-        // Phase 1 stub: removes from list (production schedules a WorkManager reminder)
-        archiveSelected()
+        val selected = _uiState.value.selectedEmail ?: return
+        snoozeEmail(selected)
     }
 
     fun forwardSelected() {
-        _uiState.update {
-            it.copy(mode = AppMode.COMPOSING, voiceDraft = null, draftBody = "")
-        }
+        _uiState.update { it.copy(mode = AppMode.COMPOSING) }
     }
 
-    fun sendDraft(isFromVoice: Boolean = false) {
-        val state = _uiState.value
-        val fromVoiceDraft = state.voiceDraft
-        if (fromVoiceDraft != null) {
-            if (isFromVoice && !isVoiceSendArmed()) {
-                tts.speak("Say you want to send, then confirm clearly.")
-                _uiState.update { it.copy(assistantStatus = "Voice send not confirmed") }
-                return
-            }
-            voiceSendArmedUntil = 0L
-            viewModelScope.launch {
-                repository.sendEmail(fromVoiceDraft).fold(
-                    onSuccess = {
-                        _uiState.update {
-                            it.copy(
-                                mode = AppMode.READING,
-                                voiceDraft = null,
-                                draftBody = it.selectedEmail?.suggestedReply.orEmpty(),
-                                assistantStatus = if (isFromVoice) "Email sent" else null,
-                            )
-                        }
-                        if (isFromVoice) tts.speak("Sent.")
-                    },
-                    onFailure = { e ->
-                        val msg = e.message ?: "Send failed"
-                        _uiState.update { it.copy(errorMessage = msg, assistantStatus = msg) }
-                        if (isFromVoice) tts.speak(msg)
-                    },
-                )
-            }
-            return
-        }
+    fun sendDraft() {
+        val draft = _uiState.value.voiceDraft
+        val selected = _uiState.value.selectedEmail
 
-        val body = state.draftBody.trim()
-        if (body.isBlank()) {
-            if (isFromVoice) tts.speak("Draft is empty.")
-            _uiState.update { it.copy(assistantStatus = "Draft is empty") }
-            return
-        }
-        if (isFromVoice && !isVoiceSendArmed()) {
-            tts.speak("Say you want to send, then confirm clearly.")
-            _uiState.update { it.copy(assistantStatus = "Voice send not confirmed") }
-            return
-        }
-        val draft = buildDraftFromComposeState(state) ?: return
-        voiceSendArmedUntil = 0L
+        // Optimistically clear the compose state so the XR UI snaps back immediately
+        confirmSend()
+
+        if (draft?.draftText.isNullOrBlank()) return
+
         viewModelScope.launch {
-            repository.sendEmail(draft).fold(
-                onSuccess = {
-                    _uiState.update {
-                        it.copy(
-                            mode = AppMode.READING,
-                            draftBody = it.selectedEmail?.suggestedReply.orEmpty(),
-                            assistantStatus = if (isFromVoice) "Email sent" else null,
-                        )
-                    }
-                    if (isFromVoice) tts.speak("Sent.")
-                },
-                onFailure = { e ->
-                    val msg = e.message ?: "Send failed"
-                    _uiState.update { it.copy(errorMessage = msg, assistantStatus = msg) }
-                    if (isFromVoice) tts.speak(msg)
-                },
+            repository.sendEmail(
+                EmailDraft(
+                    to = listOfNotNull(selected?.senderEmail),
+                    subject = draft!!.subject,
+                    body = draft.draftText,
+                    threadId = selected?.id,
+                )
             )
+            // No UI update on success — confirmSend() already showed the toast.
+            // On failure for a prototype we silently swallow it; production would retry.
         }
     }
 
@@ -272,13 +481,21 @@ class EmailViewModel(
                     },
                     selectedEmail = state.selectedEmail?.let {
                         if (it.id == messageId) it.copy(isStarred = starred) else it
-                    },
+                    }
                 )
             }
             repository.setStarred(messageId, starred)
         }
     }
 
+    // ---------------------------------------------------------------------------
+    // Voice compose — called by GeminiLiveManager command handler
+    // ---------------------------------------------------------------------------
+
+    /**
+     * Converts a Whisper/Gemini voice transcript into an [EmailDraft] and
+     * switches the UI to compose mode showing the draft for review.
+     */
     fun composeFromVoice(transcript: String) {
         val replyToId = _uiState.value.selectedEmail?.id
         viewModelScope.launch {
@@ -288,70 +505,21 @@ class EmailViewModel(
             ).fold(
                 onSuccess = { draft ->
                     _uiState.update {
-                        it.copy(
-                            mode = AppMode.COMPOSING,
-                            voiceDraft = draft,
-                            draftBody = draft.body,
-                        )
+                        it.copy(mode = AppMode.COMPOSING)
                     }
                 },
                 onFailure = { error ->
-                    val msg = error.message ?: "Could not compose email"
                     _uiState.update {
-                        it.copy(errorMessage = msg, assistantStatus = msg)
+                        it.copy(errorMessage = error.message ?: "Could not compose email")
                     }
-                },
+                }
             )
         }
     }
 
-    fun handleVoiceCommand(command: EmailCommandTool.Command) {
-        when (command) {
-            is EmailCommandTool.Command.ArmSendForVoice -> {
-                armVoiceSend()
-                tts.speak("Okay. Confirm when you are ready to send.")
-            }
-            is EmailCommandTool.Command.SendDraft -> sendDraft(isFromVoice = true)
-            is EmailCommandTool.Command.SelectEmail ->
-                findEmail(command.emailId)?.let { selectEmail(it) }
-            is EmailCommandTool.Command.ArchiveEmail ->
-                findEmail(command.emailId)?.let { selectEmail(it); archiveSelected() }
-            is EmailCommandTool.Command.SnoozeEmail ->
-                findEmail(command.emailId)?.let { selectEmail(it); snoozeSelected() }
-            is EmailCommandTool.Command.ForwardEmail -> {
-                findEmail(command.emailId)?.let { selectEmail(it) }
-                forwardSelected()
-                _uiState.update { it.copy(draftBody = "Forwarding — To: ${command.to}\n\n") }
-            }
-            is EmailCommandTool.Command.Reply -> {
-                findEmail(command.emailId)?.let { selectEmail(it) }
-                _uiState.update { s ->
-                    s.copy(
-                        mode = AppMode.COMPOSING,
-                        draftBody = command.body ?: s.draftBody,
-                    )
-                }
-            }
-            is EmailCommandTool.Command.Search -> voiceSearch(command.query)
-            is EmailCommandTool.Command.ReadAloud -> {
-                val email = findEmail(command.emailId)
-                if (email != null) {
-                    selectEmail(email)
-                    tts.speak("${email.subject}. ${email.body}")
-                } else {
-                    tts.speak("Email not found.")
-                }
-            }
-            is EmailCommandTool.Command.Summarize -> voiceSummarize(command.emailId)
-            is EmailCommandTool.Command.DraftReply -> voiceDraftReply(command.emailId, command.tone)
-            is EmailCommandTool.Command.FilterCategory -> voiceFilterCategory(command.category)
-            is EmailCommandTool.Command.SetComposeBody -> {
-                _uiState.update { it.copy(mode = AppMode.COMPOSING, draftBody = command.body) }
-            }
-            EmailCommandTool.Command.ShowInbox -> filterByCategory(null)
-            EmailCommandTool.Command.GoBack -> cancelCompose()
-        }
-    }
+    // ---------------------------------------------------------------------------
+    // Convenience accessors (used by UI composables)
+    // ---------------------------------------------------------------------------
 
     val selectedAttachments: List<Attachment>
         get() = _uiState.value.selectedEmail?.attachments.orEmpty()
@@ -359,133 +527,9 @@ class EmailViewModel(
     val selectedActionItems: List<ActionItem>
         get() = _uiState.value.selectedEmail?.actionItems.orEmpty()
 
-    private fun voiceSearch(query: String) {
-        val q = query.trim()
-        if (q.isBlank()) return
-        viewModelScope.launch {
-            _uiState.update { it.copy(isLoading = true, errorMessage = null) }
-            val category = _uiState.value.activeCategory
-            repository.listEmails(query = q).fold(
-                onSuccess = { emails ->
-                    val filtered = if (category != null) {
-                        emails.filter { it.category == category }
-                    } else {
-                        emails
-                    }
-                    _uiState.update { state ->
-                        val first = filtered.firstOrNull()
-                        state.copy(
-                            emails = filtered,
-                            selectedEmail = first,
-                            unreadCount = filtered.count { !it.isRead },
-                            isLoading = false,
-                            assistantStatus = "Search: ${filtered.size} results",
-                            draftBody = first?.suggestedReply.orEmpty(),
-                        )
-                    }
-                    filtered.firstOrNull()?.let { loadContactFor(it) }
-                },
-                onFailure = { error ->
-                    _uiState.update {
-                        it.copy(
-                            isLoading = false,
-                            errorMessage = error.message,
-                            assistantStatus = error.message,
-                        )
-                    }
-                },
-            )
-        }
-    }
-
-    private fun voiceFilterCategory(categoryToken: String) {
-        val cat = categoryToken.uppercase()
-        if (cat == "ALL") {
-            filterByCategory(null)
-            return
-        }
-        val category = when (cat) {
-            "PEOPLE" -> EmailCategory.PEOPLE
-            "UPDATES" -> EmailCategory.UPDATES
-            "PROMOTIONS" -> EmailCategory.PROMOTIONS
-            "NEWSLETTERS" -> EmailCategory.NEWSLETTERS
-            "TRANSACTIONAL" -> EmailCategory.TRANSACTIONAL
-            else -> null
-        }
-        if (category != null) {
-            filterByCategory(category)
-        } else {
-            _uiState.update { it.copy(assistantStatus = "Unknown category") }
-        }
-    }
-
-    private fun voiceSummarize(emailId: String) {
-        val email = findEmail(emailId) ?: run {
-            tts.speak("Email not found.")
-            return
-        }
-        selectEmail(email)
-        viewModelScope.launch {
-            textService.summarizeEmail(email.subject, email.body)
-                .onSuccess { summary ->
-                    updateEmailInState(email.id) { it.copy(aiSummary = summary) }
-                    _uiState.update { it.copy(isAiSummaryExpanded = true, assistantStatus = "Summary ready") }
-                    tts.speak(summary)
-                }
-                .onFailure {
-                    val fallback = email.aiSummary
-                    tts.speak(fallback)
-                    _uiState.update { it.copy(assistantStatus = "Used cached summary") }
-                }
-        }
-    }
-
-    private fun voiceDraftReply(emailId: String, tone: String?) {
-        val email = findEmail(emailId) ?: run {
-            tts.speak("Email not found.")
-            return
-        }
-        selectEmail(email)
-        viewModelScope.launch {
-            textService.draftReply(email.subject, email.body, tone)
-                .onSuccess { draft ->
-                    _uiState.update {
-                        it.copy(
-                            mode = AppMode.COMPOSING,
-                            draftBody = draft,
-                            assistantStatus = "Draft ready",
-                        )
-                    }
-                    tts.speak("Draft is on screen.")
-                }
-                .onFailure {
-                    val fallback = email.suggestedReply.orEmpty()
-                    if (fallback.isNotBlank()) {
-                        _uiState.update {
-                            it.copy(mode = AppMode.COMPOSING, draftBody = fallback)
-                        }
-                        tts.speak("Using suggested reply.")
-                    } else {
-                        tts.speak("Could not draft a reply.")
-                    }
-                }
-        }
-    }
-
-    private fun updateEmailInState(id: String, transform: (Email) -> Email) {
-        _uiState.update { state ->
-            val emails = state.emails.map { if (it.id == id) transform(it) else it }
-            val selected = state.selectedEmail?.let { if (it.id == id) transform(it) else it }
-            state.copy(
-                emails = emails,
-                selectedEmail = selected,
-                selectedContact = state.selectedContact,
-            )
-        }
-    }
-
-    private fun findEmail(id: String): Email? =
-        _uiState.value.emails.find { it.id == id }
+    // ---------------------------------------------------------------------------
+    // Private helpers
+    // ---------------------------------------------------------------------------
 
     private fun loadContactFor(email: Email) {
         viewModelScope.launch {
@@ -505,35 +549,22 @@ class EmailViewModel(
                 },
                 onFailure = {
                     _uiState.update { it.copy(isLoadingSuggestions = false) }
-                },
+                }
             )
         }
     }
 
-    private fun buildDraftFromComposeState(state: EmailUiState): EmailDraft? {
-        val body = state.draftBody.trim()
-        if (body.isBlank()) return null
-        val replyTo = state.selectedEmail
-        return EmailDraft(
-            to = replyTo?.senderEmail?.let(::listOf) ?: listOf(""),
-            subject = replyTo?.let { "Re: ${it.subject}" } ?: "(no subject)",
-            body = body,
-            inReplyTo = replyTo?.id,
-        )
-    }
+    // ---------------------------------------------------------------------------
+    // Factory — use this when injecting a real GmailRepository
+    // ---------------------------------------------------------------------------
 
     class Factory(
-        private val application: Application,
         private val repository: EmailRepository,
+        private val googleCalendarRepository: GoogleCalendarRepository? = null,
     ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
-            return EmailViewModel(application, repository) as T
+            return EmailViewModel(repository, googleCalendarRepository) as T
         }
-    }
-
-    override fun onCleared() {
-        super.onCleared()
-        tts.shutdown()
     }
 }

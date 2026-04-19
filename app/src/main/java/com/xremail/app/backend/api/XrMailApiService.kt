@@ -21,6 +21,9 @@ import retrofit2.http.*
  *   POST /ai/summarize        → Gemini email summary
  *   POST /ai/replies          → Gemini reply suggestions
  *   POST /ai/compose          → Gemini voice-to-email-draft
+ *   GET  /calendar/events     → list events in a date range
+ *   GET  /calendar/available  → find next free slot of given duration
+ *   GET  /calendar/busy       → list today's busy blocks (for check_availability)
  *
  * Authentication is handled by [com.xremail.app.backend.service.AuthInterceptor],
  * which automatically injects the stored JWT into every request that needs it.
@@ -119,4 +122,41 @@ interface XrMailApiService {
     suspend fun composeFromVoice(
         @Body request: ComposeFromVoiceRequest,
     ): Response<ApiResponse<EmailDraftDto>>
+
+    // -------------------------------------------------------------------------
+    // Calendar — proxied Google Calendar API (requires calendar.readonly scope)
+    // -------------------------------------------------------------------------
+
+    /**
+     * GET /calendar/events?start=...&end=...
+     *
+     * Returns events between [start] and [end] (both ISO-8601 datetime strings).
+     * The backend calls the Google Calendar API using the stored OAuth token.
+     */
+    @GET("calendar/events")
+    suspend fun listCalendarEvents(
+        @Query("start") start: String,
+        @Query("end")   end: String,
+        @Query("maxResults") maxResults: Int = 50,
+    ): Response<ApiResponse<CalendarEventsDto>>
+
+    /**
+     * GET /calendar/available?duration=30
+     *
+     * Finds the next free slot of [durationMinutes] minutes starting from now.
+     * Returns a [AvailableSlotDto] with [found]=false if the day is fully booked.
+     */
+    @GET("calendar/available")
+    suspend fun findAvailableSlot(
+        @Query("duration") durationMinutes: Int = 30,
+    ): Response<ApiResponse<AvailableSlotDto>>
+
+    /**
+     * GET /calendar/busy
+     *
+     * Returns all busy blocks for today so the voice assistant can answer
+     * availability questions without fetching the full event list.
+     */
+    @GET("calendar/busy")
+    suspend fun getTodayBusy(): Response<ApiResponse<CalendarEventsDto>>
 }

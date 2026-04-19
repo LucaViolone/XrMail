@@ -29,6 +29,7 @@ kotlinxSerializationJson = "1.8.0"
 kotlinxCoroutines = "1.10.1"
 googleApiClient = "2.2.0"
 googleApiServicesGmail = "v1-rev20231218-2.0.0"
+googleApiServicesCalendar = "v3-rev20231123-2.0.0"
 jwtAuth = "4.4.0"
 exposed = "0.61.0"
 h2 = "2.3.232"
@@ -84,6 +85,7 @@ kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-
 kotlinx-coroutines-core = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-core", version.ref = "kotlinxCoroutines" }
 google-api-client = { group = "com.google.api-client", name = "google-api-client", version.ref = "googleApiClient" }
 google-api-services-gmail = { group = "com.google.apis", name = "google-api-services-gmail", version.ref = "googleApiServicesGmail" }
+google-api-services-calendar = { group = "com.google.apis", name = "google-api-services-calendar", version.ref = "googleApiServicesCalendar" }
 java-jwt = { group = "com.auth0", name = "java-jwt", version.ref = "jwtAuth" }
 exposed-core = { group = "org.jetbrains.exposed", name = "exposed-core", version.ref = "exposed" }
 exposed-dao = { group = "org.jetbrains.exposed", name = "exposed-dao", version.ref = "exposed" }

@@ -25,6 +25,7 @@ data class Email(
     val actionItems: List<ActionItem> = emptyList(),
     val attachments: List<Attachment> = emptyList(),
     val threadCount: Int = 1,
+    val hasSchedulingIntent: Boolean = false,
 )
 
 data class Contact(

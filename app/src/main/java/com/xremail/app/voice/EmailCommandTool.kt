@@ -3,192 +3,208 @@ package com.xremail.app.voice
 import com.google.firebase.ai.type.FunctionDeclaration
 import com.google.firebase.ai.type.Schema
 import com.google.firebase.ai.type.Tool
-import com.google.firebase.ai.type.content
 
 /**
- * Function-calling tool definitions for the Gemini Live API session.
+ * Function-calling tool definitions the Gemini Live session exposes to the model.
  *
- * Production: pass [emailAssistantTool] as `tools` to `Firebase.ai().liveModel(...)`.
+ * The model decides when to call these based on the user's speech; we register
+ * them on connect and dispatch each call into [com.xremail.app.viewmodel.EmailViewModel]
+ * via [VoiceCommandDispatcher].
+ *
+ * When adding a new command:
+ * 1. Add a subclass to [Command].
+ * 2. Add a [FunctionDeclaration] below with matching name/args.
+ * 3. Handle the new case in [parse] and in [VoiceCommandDispatcher.dispatch].
  */
 object EmailCommandTool {
 
     sealed class Command {
         data class SelectEmail(val emailId: String) : Command()
-        data class ArchiveEmail(val emailId: String) : Command()
-        data class SnoozeEmail(val emailId: String, val until: String) : Command()
-        data class ForwardEmail(val emailId: String, val to: String) : Command()
-        data class Reply(val emailId: String, val body: String?) : Command()
+        data class ArchiveEmail(val emailId: String?) : Command()
+        data class SnoozeEmail(val emailId: String?, val until: String) : Command()
+        data class ForwardEmail(val emailId: String?, val to: String) : Command()
+        data class Reply(val emailId: String?, val body: String?) : Command()
         data class Search(val query: String) : Command()
-        data class ReadAloud(val emailId: String) : Command()
-        data class Summarize(val emailId: String) : Command()
-        data class DraftReply(val emailId: String, val tone: String?) : Command()
-        data class SendDraft(val emailId: String) : Command()
+        data class ReadAloud(val emailId: String?) : Command()
+        data class Summarize(val emailId: String?) : Command()
+        data class DraftReply(val emailId: String?, val tone: String?) : Command()
+        data class SendDraft(val emailId: String?) : Command()
         data class FilterCategory(val category: String) : Command()
-        data class SetComposeBody(val body: String) : Command()
         data object ShowInbox : Command()
         data object GoBack : Command()
-        data object ArmSendForVoice : Command()
+        data class Speak(val text: String) : Command()
+        data class CheckAvailability(val durationMinutes: Int) : Command()
+        data class ProposeTimeSlot(val durationMinutes: Int) : Command()
+        data object ShowCalendar : Command()
+        data object HideCalendar : Command()
     }
 
-    val toolNames = listOf(
-        "select_email", "archive_email", "snooze_email", "forward_email",
-        "reply", "search", "read_aloud", "summarize", "draft_reply",
-        "send_draft", "filter_category", "show_inbox", "go_back",
-        "set_compose_body", "arm_send_for_voice",
+    // ---------------------------------------------------------------------------
+    // Gemini Live tool schema
+    // ---------------------------------------------------------------------------
+
+    private val selectEmail = FunctionDeclaration(
+        "select_email",
+        "Open a specific email by id. Use when the user refers to an email in the current inbox.",
+        mapOf("emailId" to Schema.string("The id of the email to open.")),
     )
 
-    private val selectEmailFn = FunctionDeclaration(
-        name = "select_email",
-        description = "Open and focus the email with the given id.",
-        parameters = mapOf(
-            "emailId" to Schema.str("Identifier of the email in the current mailbox."),
+    private val archiveEmail = FunctionDeclaration(
+        "archive_email",
+        "Archive an email. Omit emailId to archive the currently selected one.",
+        mapOf("emailId" to Schema.string("Email id, optional.")),
+        optionalParameters = listOf("emailId"),
+    )
+
+    private val snoozeEmail = FunctionDeclaration(
+        "snooze_email",
+        "Snooze an email until a time phrase like 'tomorrow 9am'. Omits emailId = currently selected.",
+        mapOf(
+            "emailId" to Schema.string("Email id, optional."),
+            "until" to Schema.string("Natural language time to resurface, e.g. 'tomorrow 9am'."),
         ),
+        optionalParameters = listOf("emailId"),
     )
 
-    private val archiveEmailFn = FunctionDeclaration(
-        name = "archive_email",
-        description = "Archive or remove the email from the inbox.",
-        parameters = mapOf(
-            "emailId" to Schema.str("Identifier of the email to archive."),
+    private val forwardEmail = FunctionDeclaration(
+        "forward_email",
+        "Forward an email to a recipient.",
+        mapOf(
+            "emailId" to Schema.string("Email id, optional."),
+            "to" to Schema.string("Recipient email address or contact name."),
         ),
+        optionalParameters = listOf("emailId"),
     )
 
-    private val snoozeEmailFn = FunctionDeclaration(
-        name = "snooze_email",
-        description = "Snooze the email until a natural-language or ISO time.",
-        parameters = mapOf(
-            "emailId" to Schema.str("Identifier of the email."),
-            "until" to Schema.str("When to resurface, e.g. tomorrow 9am or ISO-8601."),
+    private val reply = FunctionDeclaration(
+        "reply",
+        "Compose a reply to the current email. body is the message to send; omit for blank compose.",
+        mapOf(
+            "emailId" to Schema.string("Email id, optional."),
+            "body" to Schema.string("Full message body to send, optional."),
         ),
+        optionalParameters = listOf("emailId", "body"),
     )
 
-    private val forwardEmailFn = FunctionDeclaration(
-        name = "forward_email",
-        description = "Forward the email to another address.",
-        parameters = mapOf(
-            "emailId" to Schema.str("Identifier of the email."),
-            "to" to Schema.str("Recipient email address."),
+    private val search = FunctionDeclaration(
+        "search",
+        "Search the inbox.",
+        mapOf("query" to Schema.string("Natural language search query.")),
+    )
+
+    private val readAloud = FunctionDeclaration(
+        "read_aloud",
+        "Read the selected email body aloud (not a summary — verbatim).",
+        mapOf("emailId" to Schema.string("Email id, optional.")),
+        optionalParameters = listOf("emailId"),
+    )
+
+    private val summarize = FunctionDeclaration(
+        "summarize",
+        "Summarize the selected email in one or two sentences and speak it.",
+        mapOf("emailId" to Schema.string("Email id, optional.")),
+        optionalParameters = listOf("emailId"),
+    )
+
+    private val draftReply = FunctionDeclaration(
+        "draft_reply",
+        "Generate a draft reply for review (does not send).",
+        mapOf(
+            "emailId" to Schema.string("Email id, optional."),
+            "tone" to Schema.string("Tone of the draft, e.g. formal, friendly."),
         ),
+        optionalParameters = listOf("emailId", "tone"),
     )
 
-    private val replyFn = FunctionDeclaration(
-        name = "reply",
-        description = "Set reply body text for the compose field or thread.",
-        parameters = mapOf(
-            "emailId" to Schema.str("Identifier of the email being replied to."),
-            "body" to Schema.str("Full reply body text."),
-        ),
-        optionalParameters = listOf("body"),
+    private val sendDraft = FunctionDeclaration(
+        "send_draft",
+        "Send the draft currently on screen.",
+        mapOf("emailId" to Schema.string("Email id being replied to, optional.")),
+        optionalParameters = listOf("emailId"),
     )
 
-    private val searchFn = FunctionDeclaration(
-        name = "search",
-        description = "Search inbox by keywords or sender.",
-        parameters = mapOf(
-            "query" to Schema.str("Search query."),
-        ),
+    private val filterCategory = FunctionDeclaration(
+        "filter_category",
+        "Filter the inbox to a category like 'work', 'personal', 'promotions'.",
+        mapOf("category" to Schema.string("Category name.")),
     )
 
-    private val readAloudFn = FunctionDeclaration(
-        name = "read_aloud",
-        description = "Read the email content aloud using text-to-speech.",
-        parameters = mapOf(
-            "emailId" to Schema.str("Identifier of the email."),
-        ),
+    private val showInbox = FunctionDeclaration(
+        "show_inbox",
+        "Return to the inbox view.",
+        emptyMap(),
     )
 
-    private val summarizeFn = FunctionDeclaration(
-        name = "summarize",
-        description = "Generate a short spoken summary of the email.",
-        parameters = mapOf(
-            "emailId" to Schema.str("Identifier of the email."),
-        ),
+    private val goBack = FunctionDeclaration(
+        "go_back",
+        "Go back one step in navigation.",
+        emptyMap(),
     )
 
-    private val draftReplyFn = FunctionDeclaration(
-        name = "draft_reply",
-        description = "Draft an AI reply in the compose panel with optional tone.",
-        parameters = mapOf(
-            "emailId" to Schema.str("Identifier of the email."),
-            "tone" to Schema.str("Tone: professional, friendly, or brief."),
-        ),
-        optionalParameters = listOf("tone"),
+    private val speak = FunctionDeclaration(
+        "speak",
+        "Speak a short phrase to the user through local TTS.",
+        mapOf("text" to Schema.string("The phrase to speak.")),
     )
 
-    private val sendDraftFn = FunctionDeclaration(
-        name = "send_draft",
-        description = "Send the current draft. ONLY after user gives explicit oral confirmation and arm_send_for_voice was used in this session.",
-        parameters = mapOf(
-            "emailId" to Schema.str("Identifier of the email thread being answered."),
-        ),
+    private val checkAvailability = FunctionDeclaration(
+        "check_availability",
+        "Check the user's calendar for availability.",
+        mapOf("durationMinutes" to Schema.string("Duration in minutes, e.g. '30'.")),
+        optionalParameters = listOf("durationMinutes"),
     )
 
-    private val filterCategoryFn = FunctionDeclaration(
-        name = "filter_category",
-        description = "Filter inbox by category token.",
-        parameters = mapOf(
-            "category" to Schema.str(
-                "One of: PEOPLE, UPDATES, PROMOTIONS, NEWSLETTERS, TRANSACTIONAL, or ALL.",
-            ),
-        ),
+    private val proposeTimeSlot = FunctionDeclaration(
+        "propose_time_slot",
+        "Find a free time slot and draft a reply proposing it.",
+        mapOf("durationMinutes" to Schema.string("Duration in minutes, e.g. '30'.")),
+        optionalParameters = listOf("durationMinutes"),
     )
 
-    private val showInboxFn = FunctionDeclaration(
-        name = "show_inbox",
-        description = "Show the full inbox clearing filters.",
-        parameters = emptyMap(),
+    private val showCalendar = FunctionDeclaration(
+        "show_calendar",
+        "Open the spatial calendar view.",
+        emptyMap(),
     )
 
-    private val goBackFn = FunctionDeclaration(
-        name = "go_back",
-        description = "Leave compose and return to reading mode if possible.",
-        parameters = emptyMap(),
+    private val hideCalendar = FunctionDeclaration(
+        "hide_calendar",
+        "Close the spatial calendar view.",
+        emptyMap(),
     )
 
-    private val setComposeBodyFn = FunctionDeclaration(
-        name = "set_compose_body",
-        description = "Replace the entire compose body with transcribed or generated text while composing.",
-        parameters = mapOf(
-            "body" to Schema.str("Full email body for the draft."),
-        ),
-    )
-
-    private val armSendFn = FunctionDeclaration(
-        name = "arm_send_for_voice",
-        description = "Call when the user clearly intends to send (before send_draft). Required once per send attempt.",
-        parameters = emptyMap(),
-    )
-
-    val emailAssistantTool: Tool = Tool.functionDeclarations(
+    val tool: Tool = Tool.functionDeclarations(
         listOf(
-            selectEmailFn,
-            archiveEmailFn,
-            snoozeEmailFn,
-            forwardEmailFn,
-            replyFn,
-            searchFn,
-            readAloudFn,
-            summarizeFn,
-            draftReplyFn,
-            sendDraftFn,
-            filterCategoryFn,
-            showInboxFn,
-            goBackFn,
-            setComposeBodyFn,
-            armSendFn,
+            selectEmail, archiveEmail, snoozeEmail, forwardEmail, reply, search,
+            readAloud, summarize, draftReply, sendDraft, filterCategory,
+            showInbox, goBack, speak, checkAvailability, proposeTimeSlot,
+            showCalendar, hideCalendar,
         ),
     )
 
-    val systemInstruction = content {
-        text(
-            """
-            You are a concise voice assistant inside an email app on XR hardware.
-            Keep spoken replies very short (under 15 words) unless reading email content.
-            Use tools to change the UI; do not claim an action happened without calling the right tool.
-            For sending: first call arm_send_for_voice when the user says they want to send mail.
-            Only call send_draft after the user gives a clear explicit confirmation (e.g. "send it", "yes send").
-            If send would happen without that two-step flow, refuse and ask for confirmation.
-            """.trimIndent(),
-        )
+    // ---------------------------------------------------------------------------
+    // Parsing: FunctionCallPart (from Gemini Live) -> Command
+    // ---------------------------------------------------------------------------
+
+    fun parse(name: String, args: Map<String, String?>): Command? = when (name) {
+        "select_email" -> args["emailId"]?.let { Command.SelectEmail(it) }
+        "archive_email" -> Command.ArchiveEmail(args["emailId"])
+        "snooze_email" -> args["until"]?.let { Command.SnoozeEmail(args["emailId"], it) }
+        "forward_email" -> args["to"]?.let { Command.ForwardEmail(args["emailId"], it) }
+        "reply" -> Command.Reply(args["emailId"], args["body"])
+        "search" -> args["query"]?.let { Command.Search(it) }
+        "read_aloud" -> Command.ReadAloud(args["emailId"])
+        "summarize" -> Command.Summarize(args["emailId"])
+        "draft_reply" -> Command.DraftReply(args["emailId"], args["tone"])
+        "send_draft" -> Command.SendDraft(args["emailId"])
+        "filter_category" -> args["category"]?.let { Command.FilterCategory(it) }
+        "show_inbox" -> Command.ShowInbox
+        "go_back" -> Command.GoBack
+        "speak" -> args["text"]?.let { Command.Speak(it) }
+        "check_availability" -> Command.CheckAvailability(args["durationMinutes"]?.toIntOrNull() ?: 30)
+        "propose_time_slot" -> Command.ProposeTimeSlot(args["durationMinutes"]?.toIntOrNull() ?: 30)
+        "show_calendar" -> Command.ShowCalendar
+        "hide_calendar" -> Command.HideCalendar
+        else -> null
     }
 }

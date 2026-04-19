@@ -34,6 +34,7 @@ class EmailClassifier {
         val urgencyScore: Float,
         val suggestedReply: String?,
         val replyConfidence: Float,
+        val hasSchedulingIntent: Boolean,
         val inferenceSource: InferenceSource,
     )
 
@@ -54,6 +55,7 @@ class EmailClassifier {
                 urgencyScore = email.urgencyScore,
                 suggestedReply = email.suggestedReply,
                 replyConfidence = email.replyConfidence,
+                hasSchedulingIntent = email.hasSchedulingIntent,
                 inferenceSource = InferenceSource.MOCK,
             )
         }
@@ -65,7 +67,7 @@ class EmailClassifier {
     fun buildBatchPrompt(emails: List<Email>): String {
         return buildString {
             appendLine("Classify these ${emails.size} emails. Return a JSON array.")
-            appendLine("Each element: {priority, category, action, summary, urgencyScore, suggestedReply, replyConfidence}")
+            appendLine("Each element: {priority, category, action, summary, urgencyScore, suggestedReply, replyConfidence, hasSchedulingIntent}")
             appendLine()
             emails.forEachIndexed { i, email ->
                 appendLine("--- EMAIL $i ---")
