@@ -32,6 +32,7 @@ object EmailCommandTool {
         data class FilterCategory(val category: String) : Command()
         data object ShowInbox : Command()
         data object GoBack : Command()
+        data object Refresh : Command()
         data class Speak(val text: String) : Command()
     }
 
@@ -137,6 +138,12 @@ object EmailCommandTool {
         emptyMap(),
     )
 
+    private val refresh = FunctionDeclaration(
+        "refresh",
+        "Recover / reset the UI: collapse every panel back to the ambient HUD and reload the inbox. Call this when the user says things like 'refresh', 'reset', 'start over', 'I'm stuck', 'the UI is frozen', or when you detect confusion about what's on screen.",
+        emptyMap(),
+    )
+
     private val speak = FunctionDeclaration(
         "speak",
         "Speak a short phrase to the user through local TTS.",
@@ -147,7 +154,7 @@ object EmailCommandTool {
         listOf(
             selectEmail, archiveEmail, snoozeEmail, forwardEmail, reply, search,
             readAloud, summarize, draftReply, sendDraft, filterCategory,
-            showInbox, goBack, speak,
+            showInbox, goBack, refresh, speak,
         ),
     )
 
@@ -169,6 +176,7 @@ object EmailCommandTool {
         "filter_category" -> args["category"]?.let { Command.FilterCategory(it) }
         "show_inbox" -> Command.ShowInbox
         "go_back" -> Command.GoBack
+        "refresh" -> Command.Refresh
         "speak" -> args["text"]?.let { Command.Speak(it) }
         else -> null
     }

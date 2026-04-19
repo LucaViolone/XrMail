@@ -185,6 +185,30 @@ class EmailViewModel(
         _uiState.update { it.copy(showEmulatorHelp = !it.showEmulatorHelp) }
     }
 
+    /**
+     * Emergency-recovery reset. Collapses back to AMBIENT_HUD, clears any
+     * half-baked compose / selection / toast state, and reloads the inbox.
+     * Called by the voice agent when the user says "refresh" / "reset" /
+     * "start over", and wired to a visible escape-hatch button in the HUD.
+     *
+     * Safe to call from any tier — always lands you on a known-good state.
+     */
+    fun refreshUi() {
+        _uiState.update {
+            it.copy(
+                tier = InteractionTier.AMBIENT_HUD,
+                mode = AppMode.READING,
+                isVoiceComposing = false,
+                voiceDraft = null,
+                highlightedNotificationId = null,
+                isGazingAtNotifications = false,
+                errorMessage = null,
+                toastMessage = ToastMessage("Refreshed"),
+            )
+        }
+        loadEmails()
+    }
+
     // ---------------------------------------------------------------------------
     // Email selection
     // ---------------------------------------------------------------------------

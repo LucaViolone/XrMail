@@ -20,6 +20,19 @@ class VoiceCommandDispatcher(
 
     fun dispatch(command: EmailCommandTool.Command) {
         Log.i(TAG, "dispatch: $command")
+        try {
+            dispatchInner(command)
+        } catch (t: Throwable) {
+            // Never let a bad command handler take down the voice pipeline —
+            // a thrown exception here would propagate up through the commands
+            // SharedFlow collector in MainActivity and kill the session.
+            Log.e(TAG, "dispatch failed for $command", t)
+            tts.speak("Something went wrong.")
+            viewModel.refreshUi()
+        }
+    }
+
+    private fun dispatchInner(command: EmailCommandTool.Command) {
         val state = viewModel.uiState.value
         val selected: Email? = state.selectedEmail
 
@@ -81,6 +94,11 @@ class VoiceCommandDispatcher(
 
             EmailCommandTool.Command.GoBack -> {
                 viewModel.collapseToHud()
+            }
+
+            EmailCommandTool.Command.Refresh -> {
+                viewModel.refreshUi()
+                tts.speak("Refreshed.")
             }
 
             is EmailCommandTool.Command.Speak -> {

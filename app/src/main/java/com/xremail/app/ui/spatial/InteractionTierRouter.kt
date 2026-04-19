@@ -8,16 +8,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Surface
-import androidx.compose.foundation.focusable
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.focusTarget
 import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -100,19 +96,18 @@ fun InteractionTierRouter(
     // offset. FOCUS tier opts out below (it has manual drag instead).
     val lazyOffset: DpOffset by rememberLazyFollowOffset()
 
-    // Focus requester so the active panel captures emulator keyboard events.
-    // Re-requests focus on tier change so the new panel gets keys immediately.
-    val focusRequester = remember { FocusRequester() }
-    LaunchedEffect(uiState.tier) {
-        kotlinx.coroutines.yield()
-        try { focusRequester.requestFocus() } catch (_: IllegalStateException) { }
-    }
+    // Emulator-only keyboard hook. Previously the TRIAGE Surface chained
+    // `.focusable()` on top, which adds a clickable-to-request-focus behavior
+    // at the container level — that ate taps before they reached the
+    // EmailCards / action buttons inside, which is why TRIAGE felt frozen
+    // after opening an email. `.focusTarget()` gives us keyboard focus without
+    // consuming pointer events. Also dropped the tier-change requestFocus()
+    // cascade so opening a panel doesn't fight with child focus.
     val keyEventModifier = Modifier
-        .focusRequester(focusRequester)
         .onPreviewKeyEvent { event: KeyEvent ->
             if (event.type == KeyEventType.KeyDown) onKeyDown(event.key.nativeKeyCode) else false
         }
-        .focusable()
+        .focusTarget()
 
     Subspace {
         when (uiState.tier) {
