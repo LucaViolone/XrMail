@@ -60,17 +60,25 @@ private const val MAX_VISIBLE_CARDS = 5
 /**
  * iPhone-style notification banner for the Ambient HUD.
  * Shows the unread count pill alongside a rotating preview of the
- * latest sender + AI summary. Tapping or gaze-dwelling expands
- * to the NOTIFICATION_CARDS tier.
+ * latest sender + AI summary. EXPANSION REQUIRES A DELIBERATE
+ * PINCH-HOLD GESTURE (≥550 ms) — the banner is intentionally NOT a
+ * gaze+pinch click target because it's the only thing visible and
+ * accidentally satisfying gaze + any pinch was firing constant
+ * unintentional tier transitions. The user surfaces the actual
+ * expansion path via "Pinch + hold to expand" hint below the banner
+ * (rendered by InteractionTierRouter.MainPanelPlaceholder).
  *
  * Visually similar to iOS lock screen banners — rounded pill with
  * avatar, sender, and one-line preview. Pulses gently when HIGH
  * priority emails are present.
+ *
+ * `onExpand` is retained in the signature so we don't churn the
+ * call sites, but it's intentionally never invoked from this widget.
  */
 @Composable
 fun NotificationBanner(
     emails: List<Email>,
-    onExpand: () -> Unit,
+    @Suppress("UNUSED_PARAMETER") onExpand: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val unread = remember(emails) { emails.filter { !it.isRead } }
@@ -112,13 +120,22 @@ fun NotificationBanner(
         Priority.IGNORE -> XREmailColors.onSurfaceDim
     }
 
+    // INTENTIONALLY NOT .clickable here. The banner is the ONLY thing
+    // visible in AMBIENT_HUD, so the user's gaze naturally rests on it —
+    // every accidental primary-hand pinch (rummaging in a pocket, walking
+    // with arms swinging, picking something up) was firing the OS gaze+pinch
+    // click pipeline and expanding the HUD without the user touching
+    // anything intentional. The 550 ms PINCH_HOLD_EXPAND gesture handled
+    // by SecondaryHandGestures (and surfaced in the "Pinch + hold to
+    // expand" hint below the banner) is the only expansion path now,
+    // because it requires deliberate intent (a genuine 550 ms hold is
+    // never produced by incidental hand activity).
     Row(
         modifier = modifier
             .fillMaxWidth()
             .scale(pulseScale)
             .clip(RoundedCornerShape(16.dp))
             .background(XREmailColors.surfaceVariant.copy(alpha = 0.9f))
-            .clickable(onClick = onExpand)
             .padding(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -214,7 +231,7 @@ fun NotificationCardStack(
     onArchiveEmail: (Email) -> Unit,
     onSnoozeEmail: (Email) -> Unit,
     onCollapseToHud: () -> Unit,
-    onExpandToInbox: () -> Unit,
+    @Suppress("UNUSED_PARAMETER") onExpandToInbox: () -> Unit,
     modifier: Modifier = Modifier,
     /**
      * Head-tilt-driven scroll delta from [com.xremail.app.tracking.TiltScrollController].
@@ -292,14 +309,14 @@ fun NotificationCardStack(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // Left header: tap to expand the stack into the INBOX panel.
-            // Gives a keyboard/mouse-reachable forward path that doesn't require
-            // a pinch gesture — needed on the emulator and as a fallback when
-            // hand tracking loses the user's hand.
+            // Left header: NO LONGER clickable. Was firing tier transitions
+            // every time the user glanced at the unread count and made any
+            // incidental primary-hand pinch. Forward escalation to INBOX
+            // is now exclusively the deliberate PINCH_HOLD_EXPAND gesture
+            // (or pinch-on-a-card if the user wants a specific email).
             Row(
                 modifier = Modifier
                     .clip(RoundedCornerShape(8.dp))
-                    .clickable(onClick = onExpandToInbox)
                     .padding(horizontal = 4.dp, vertical = 2.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -355,13 +372,16 @@ fun NotificationCardStack(
         }
 
         if (unread.size > MAX_VISIBLE_CARDS) {
+            // NOT clickable — fillMaxWidth makes the whole footer row a
+            // gaze target, and any incidental primary-hand pinch was
+            // jumping the user from cards straight to INBOX. Hint text
+            // points at the deliberate gesture instead.
             Text(
-                text = "+${unread.size - MAX_VISIBLE_CARDS} more — pinch to see all",
+                text = "+${unread.size - MAX_VISIBLE_CARDS} more — pinch + hold to open inbox",
                 style = MaterialTheme.typography.labelSmall,
                 color = XREmailColors.onSurfaceDim,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable(onClick = onExpandToInbox)
                     .padding(vertical = 4.dp),
             )
         }

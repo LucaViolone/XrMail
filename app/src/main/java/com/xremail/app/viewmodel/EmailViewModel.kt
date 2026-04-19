@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.xremail.app.backend.mock.MockEmailRepository
 import com.xremail.app.backend.service.EmailRepository
 import com.xremail.app.data.*
+import com.xremail.app.util.XrLog
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -105,6 +106,7 @@ class EmailViewModel(
     // ---------------------------------------------------------------------------
 
     fun expandToNotificationCards() {
+        logTier("expandToNotificationCards", InteractionTier.NOTIFICATION_CARDS)
         _uiState.update {
             it.copy(
                 tier = InteractionTier.NOTIFICATION_CARDS,
@@ -114,6 +116,7 @@ class EmailViewModel(
     }
 
     fun collapseFromNotificationCards() {
+        logTier("collapseFromNotificationCards", InteractionTier.AMBIENT_HUD)
         _uiState.update {
             it.copy(
                 tier = InteractionTier.AMBIENT_HUD,
@@ -139,6 +142,7 @@ class EmailViewModel(
      * view that has the email selected on one side.
      */
     fun openFromNotification(email: Email) {
+        logTier("openFromNotification(${email.id})", InteractionTier.FOCUS)
         selectEmail(email)
         _uiState.update {
             it.copy(
@@ -150,6 +154,7 @@ class EmailViewModel(
     }
 
     fun expandToInbox() {
+        logTier("expandToInbox", InteractionTier.INBOX)
         _uiState.update {
             it.copy(
                 tier = InteractionTier.INBOX,
@@ -160,6 +165,7 @@ class EmailViewModel(
     }
 
     fun collapseToHud() {
+        logTier("collapseToHud", InteractionTier.AMBIENT_HUD)
         _uiState.update {
             it.copy(
                 tier = InteractionTier.AMBIENT_HUD,
@@ -172,10 +178,12 @@ class EmailViewModel(
     }
 
     fun expandToFocus() {
+        logTier("expandToFocus", InteractionTier.FOCUS)
         _uiState.update { it.copy(tier = InteractionTier.FOCUS) }
     }
 
     fun collapseToNotificationCards() {
+        logTier("collapseToNotificationCards", InteractionTier.NOTIFICATION_CARDS)
         _uiState.update {
             it.copy(
                 tier = InteractionTier.NOTIFICATION_CARDS,
@@ -185,7 +193,35 @@ class EmailViewModel(
     }
 
     fun collapseToInbox() {
+        logTier("collapseToInbox", InteractionTier.INBOX)
         _uiState.update { it.copy(tier = InteractionTier.INBOX) }
+    }
+
+    /**
+     * Single-source-of-truth logger for tier transitions. Captures a
+     * stack trace so when the user reports "the screen switched and I
+     * didn't do anything," logcat shows the exact call path that fired
+     * the transition (gesture → mapper, voice → dispatcher, OS click →
+     * compose modifier, periodic refresh, etc.). The stack stays in WARN
+     * level so it's grep-able from a noisy log.
+     */
+    private fun logTier(reason: String, target: InteractionTier) {
+        val from = _uiState.value.tier.name
+        val sameTier = from == target.name
+        if (sameTier) {
+            XrLog.d("Tier", "$reason: already at $from (no-op transition request)")
+            return
+        }
+        // Prune the trace to the first 6 app frames so the line is
+        // scannable. Skips Throwable.fillInStackTrace + this method.
+        val appFrames = Throwable().stackTrace
+            .asSequence()
+            .drop(1)
+            .filter { it.className.startsWith("com.xremail.app") }
+            .take(6)
+            .joinToString(" <- ") { "${it.fileName}:${it.lineNumber}" }
+        XrLog.tier(from, target.name, reason)
+        XrLog.w("Tier", "  via: $appFrames")
     }
 
     fun setGazingAtNotifications(gazing: Boolean) {
@@ -205,6 +241,7 @@ class EmailViewModel(
      * Safe to call from any tier — always lands you on a known-good state.
      */
     fun refreshUi() {
+        logTier("refreshUi", InteractionTier.AMBIENT_HUD)
         _uiState.update {
             it.copy(
                 tier = InteractionTier.AMBIENT_HUD,
