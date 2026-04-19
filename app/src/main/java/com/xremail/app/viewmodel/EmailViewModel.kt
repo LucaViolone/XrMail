@@ -292,17 +292,49 @@ class EmailViewModel(
 
     fun voiceReply(briefInstruction: String) {
         val email = _uiState.value.selectedEmail ?: return
-        val draft = email.suggestedReply ?: "Thank you for your email. $briefInstruction"
+
+        // Show a generating spinner immediately — feedback for the XR user
         _uiState.update {
             it.copy(
                 isVoiceComposing = true,
                 voiceDraft = VoiceDraft(
                     recipientName = email.sender,
                     subject = "Re: ${email.subject}",
-                    draftText = draft,
-                    isGenerating = false,
-                    confidence = email.replyConfidence,
+                    isGenerating = true,
                 ),
+            )
+        }
+
+        viewModelScope.launch {
+            repository.composeFromVoice(
+                transcript = briefInstruction,
+                replyToMessageId = email.id,
+            ).fold(
+                onSuccess = { emailDraft ->
+                    _uiState.update {
+                        it.copy(
+                            voiceDraft = VoiceDraft(
+                                recipientName = email.sender,
+                                subject = emailDraft.subject.ifBlank { "Re: ${email.subject}" },
+                                draftText = emailDraft.body,
+                                isGenerating = false,
+                                confidence = 0.85f,
+                            ),
+                        )
+                    }
+                },
+                onFailure = {
+                    // Fallback: use the raw instruction as body so the flow never dead-ends
+                    _uiState.update { state ->
+                        state.copy(
+                            voiceDraft = state.voiceDraft?.copy(
+                                draftText = briefInstruction,
+                                isGenerating = false,
+                                confidence = 0.5f,
+                            ),
+                        )
+                    }
+                }
             )
         }
     }
@@ -382,7 +414,26 @@ class EmailViewModel(
     }
 
     fun sendDraft() {
+        val draft = _uiState.value.voiceDraft
+        val selected = _uiState.value.selectedEmail
+
+        // Optimistically clear the compose state so the XR UI snaps back immediately
         confirmSend()
+
+        if (draft?.draftText.isNullOrBlank()) return
+
+        viewModelScope.launch {
+            repository.sendEmail(
+                EmailDraft(
+                    to = listOfNotNull(selected?.senderEmail),
+                    subject = draft!!.subject,
+                    body = draft.draftText,
+                    threadId = selected?.id,
+                )
+            )
+            // No UI update on success — confirmSend() already showed the toast.
+            // On failure for a prototype we silently swallow it; production would retry.
+        }
     }
 
     fun setStarred(messageId: String, starred: Boolean) {

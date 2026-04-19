@@ -1,9 +1,13 @@
 package com.xremail.app.voice
 
 import com.xremail.app.viewmodel.VoiceDraft
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 
 /**
  * Orchestrates the voice-first compose flow:
@@ -53,9 +57,24 @@ class VoiceComposeManager(
         }
     }
 
-    fun editDraft(instruction: String) {
+    /**
+     * Applies a voice edit instruction to the current draft.
+     *
+     * In production, the instruction is forwarded to Gemini Live which generates
+     * a revised body and calls [onDraftGenerated] with the result. For the
+     * prototype we simulate the round-trip with a short delay, then append a
+     * note so it's obvious in demos that the edit was received.
+     */
+    fun editDraft(instruction: String, scope: CoroutineScope = CoroutineScope(Dispatchers.Main)) {
+        val current = _draft.value ?: return
         _state.value = ComposeState.GENERATING
-        _draft.value = _draft.value?.copy(isGenerating = true)
+        _draft.value = current.copy(isGenerating = true)
+
+        scope.launch {
+            delay(900) // simulate Gemini round-trip
+            val revised = "${current.draftText}\n\n[Edited: $instruction]"
+            onDraftGenerated(revised, confidence = 0.80f)
+        }
     }
 
     fun confirmSend(): VoiceDraft? {
