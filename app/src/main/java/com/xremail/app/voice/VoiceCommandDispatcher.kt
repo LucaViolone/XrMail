@@ -286,20 +286,45 @@ class VoiceCommandDispatcher(
             append("total=${state.emails.size}; ")
             append("unread=${state.emails.count { !it.isRead }}")
             if (sel != null) {
-                append("\nselected: id=${sel.id}, from=${sel.sender}, subject=\"${sel.subject}\", priority=${sel.priority.name}")
+                append("\nselected: from=${sel.sender}, subject=\"${sel.subject}\", priority=${sel.priority.name}")
+                append("\nselected_body: \"${bodyExcerpt(sel.body, MAX_SELECTED_BODY_CHARS)}\"")
             } else {
                 append("\nselected: none")
             }
             if (unreadTop.isNotEmpty()) {
                 append("\ntop unread:")
                 unreadTop.forEach { e ->
-                    append("\n  - id=${e.id}, from=${e.sender}, subject=\"${e.subject}\", priority=${e.priority.name}")
+                    append("\n  - from=${e.sender}, subject=\"${e.subject}\", priority=${e.priority.name}")
+                    append("\n    body: \"${bodyExcerpt(e.body, MAX_LIST_BODY_CHARS)}\"")
                 }
             }
         }
     }
 
+    /**
+     * Trim an email body for inclusion in the Gemini context. Keeps roughly
+     * the first [maxChars] characters and collapses runs of whitespace so
+     * one email doesn't blow the context window. Just enough for Gemini to
+     * answer "what did Alex say?" or "what's the gist of the Stripe email"
+     * without a separate tool call.
+     */
+    private fun bodyExcerpt(body: String, maxChars: Int): String {
+        val collapsed = body.replace(Regex("""\s+"""), " ").trim()
+        if (collapsed.length <= maxChars) return collapsed.escapeForContext()
+        return (collapsed.take(maxChars).trimEnd() + "…").escapeForContext()
+    }
+
+    private fun String.escapeForContext(): String =
+        this.replace("\"", "'").replace("\n", " ")
+
     companion object {
         private const val TAG = "VoiceDispatcher"
+        // Body excerpt budget for the SELECTED email (the user is most
+        // likely asking about it, so we give it more room).
+        private const val MAX_SELECTED_BODY_CHARS = 600
+        // Per-email budget for the top-unread list. Five emails × 220 ≈
+        // 1.1k chars of body context — well under the model's prefill
+        // budget but enough to answer "what's everyone asking about?".
+        private const val MAX_LIST_BODY_CHARS = 220
     }
 }

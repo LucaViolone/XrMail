@@ -238,6 +238,28 @@ class GeminiLiveManager {
         _lastActivityMs.value = System.currentTimeMillis()
         _state.value = SessionState.LISTENING
         XrLog.i(TAG, "Gemini SUMMONED — opening mic for conversation")
+        // Inject the current inbox context as a user-role text turn
+        // BEFORE the mic opens so the model sees it as part of this
+        // conversation, not as an unrelated dangling utterance. Without
+        // this Gemini has zero grounding and can't answer "what did Alex
+        // say" — it knows there's an email from Alex (subject + sender)
+        // but not what Alex actually wrote. With this, it can answer
+        // directly from context with no extra round-trip.
+        scope.launch(Dispatchers.Default) {
+            try {
+                val ctx = contextProvider().trim()
+                if (ctx.isNotBlank()) {
+                    live.send(content(role = "user") {
+                        text("CONTEXT (current inbox state, for grounding only — do not respond to this turn):\n$ctx")
+                    })
+                    XrLog.d(TAG, "summon: pushed ${ctx.length}-char context to model")
+                } else {
+                    XrLog.v(TAG, "summon: contextProvider returned empty — skipping push")
+                }
+            } catch (t: Throwable) {
+                XrLog.w(TAG, "summon: context push failed (${t.message}) — continuing without")
+            }
+        }
         sessionJob = scope.launch(Dispatchers.Default) {
             try {
                 live.startAudioConversation(
@@ -489,9 +511,11 @@ class GeminiLiveManager {
         // Every additional token here adds prefill latency to the first
         // audio chunk on each turn, so we keep the prose dense.
         private val SYSTEM_PROMPT = """
-            You are XrMail's hands-free voice agent. Two modes:
+            You are XrMail's hands-free voice agent. Three modes:
 
-            ACTION MODE (default): when the user's intent maps to a tool, call it immediately — never narrate. Then speak ONE confirmation, max 6 words ("Archived." "Snoozed till tomorrow." "Opening inbox.").
+            ANSWER MODE (when the user asks a question about their email — "what did Alex say", "what's the gist", "anything urgent", "summarize this", "who's that from", etc.): answer DIRECTLY in 1-3 short spoken sentences, using the CONTEXT block injected at the top of each turn. Quote the sender by name and paraphrase what they wrote. Do NOT call a tool unless the user asks for an action. If the answer isn't in the context, say so in one sentence — don't make things up.
+
+            ACTION MODE (when the user's intent maps to a tool — archive, snooze, next, refresh, expand, collapse, etc.): call the tool immediately, never narrate. Then speak ONE confirmation, max 6 words ("Archived." "Snoozed till tomorrow." "Opening inbox.").
 
             COMPOSE MODE (when the user asks to reply, write back, draft, respond, or send a message): write the FULL reply yourself in 1-4 short sentences, natural and ready-to-send. Pass the complete text in draft_reply(body=...). Then say ONE short confirmation like "Drafted, want me to send it?" — DO NOT speak the draft body, the UI reads it back. If the user revises, call revise_draft(body=...) with the COMPLETE rewritten body. Only call send_draft after the user explicitly confirms ("send it", "yes", "fire it").
 

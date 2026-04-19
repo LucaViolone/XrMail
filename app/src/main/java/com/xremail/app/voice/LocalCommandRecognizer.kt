@@ -303,36 +303,51 @@ class LocalCommandRecognizer(
         override fun onReadyForSpeech(params: Bundle?) {
             roundReady = true
             watchdogJob?.cancel()
-            // First successful onReadyForSpeech is our signal that the
-            // recognizer service has actually bound and is listening for
-            // real audio. Until this fires we sit in STARTING — UI shows
-            // "Voice starting…" instead of falsely claiming "Listening".
             if (_state.value == State.STARTING) {
                 _state.value = State.LISTENING
                 XrLog.i(TAG, "recognizer onReadyForSpeech -> LISTENING (component=$usingComponentLabel)")
+            } else {
+                XrLog.d(TAG, "recognizer onReadyForSpeech (round restart, state=${_state.value})")
             }
         }
-        override fun onBeginningOfSpeech() {}
+        override fun onBeginningOfSpeech() {
+            XrLog.d(TAG, "onBeginningOfSpeech (user is talking)")
+        }
         override fun onRmsChanged(rmsdB: Float) {}
         override fun onBufferReceived(buffer: ByteArray?) {}
-        override fun onEndOfSpeech() {}
-        override fun onEvent(eventType: Int, params: Bundle?) {}
+        override fun onEndOfSpeech() {
+            XrLog.d(TAG, "onEndOfSpeech (recognizer detected silence)")
+        }
+        override fun onEvent(eventType: Int, params: Bundle?) {
+            XrLog.v(TAG, "onEvent type=$eventType")
+        }
 
         override fun onPartialResults(partialResults: Bundle?) {
-            // We try to dispatch on partials so the user perceives an
-            // "instant" reaction — for short phrases like "next" or
-            // "archive" the partial fires within ~150-200 ms of speech
-            // onset, well before onResults arrives ~500 ms later. We
-            // only act on partials that look complete (pattern matches
-            // the WHOLE remainder, not just a prefix); see
-            // [CommandGrammar] for the regex anchors.
+            val transcript = partialResults
+                ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                ?.firstOrNull()
+                ?.takeIf { it.isNotBlank() }
+            if (transcript != null) {
+                XrLog.d(TAG, "onPartialResults: \"$transcript\"")
+            }
             handleTranscript(partialResults, partial = true)
         }
 
         override fun onResults(results: Bundle?) {
+            val transcript = results
+                ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                ?.firstOrNull()
+                ?.takeIf { it.isNotBlank() }
+            if (transcript != null) {
+                XrLog.i(TAG, "onResults FINAL: \"$transcript\"")
+            } else {
+                XrLog.d(TAG, "onResults FINAL with empty transcript")
+            }
             handleTranscript(results, partial = false)
             consecutiveErrors = 0
-            if (_state.value == State.LISTENING) startListeningRound()
+            if (_state.value == State.LISTENING || _state.value == State.STARTING) {
+                startListeningRound()
+            }
         }
 
         override fun onError(error: Int) {
@@ -354,6 +369,8 @@ class LocalCommandRecognizer(
                 XrLog.w(TAG, "recognizer onError=$name (consec=$consecutiveErrors component=$usingComponentLabel)")
                 consecutiveErrors++
                 _lastError.value = name
+            } else {
+                XrLog.v(TAG, "recognizer onError=$name (benign — re-arming)")
             }
             // If the component never bound (no onReadyForSpeech ever
             // fired before erroring out), it's broken on this device.
