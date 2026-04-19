@@ -564,6 +564,7 @@ private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
             onSend = { viewModel.sendDraft() },
             onCancelCompose = viewModel::cancelCompose,
             onDismissToast = viewModel::dismissToast,
+            onSummonGemini = { geminiLive.summon() },
         )
 
         // Show the 2D pill *only* when the main panel actually owns the user's

@@ -11,6 +11,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -72,6 +73,7 @@ fun VoicePrompt(
     localState: LocalCommandRecognizer.State,
     modifier: Modifier = Modifier,
     compact: Boolean = false,
+    onSummonGemini: (() -> Unit)? = null,
 ) {
     val visual = remember(voiceState, localState) { computeVisual(voiceState, localState) }
 
@@ -86,15 +88,35 @@ fun VoicePrompt(
     )
     val effectiveAlpha = if (visual.pulse) pulseAlpha else 1f
 
+    // Pinch-to-summon: in any state where Gemini Live is reachable but
+    // not already streaming, a tap opens the mic immediately. This is
+    // the manual escape hatch when the local wake-word recognizer is
+    // broken (Galaxy XR's on-device service silently fails — the
+    // VoicePrompt becomes the user's only way in).
+    val canSummon = onSummonGemini != null && (
+        voiceState == GeminiLiveManager.SessionState.CONNECTED ||
+            localState == LocalCommandRecognizer.State.ERROR ||
+            voiceState == GeminiLiveManager.SessionState.ERROR
+    )
+
+    val rowModifier = modifier
+        .clip(RoundedCornerShape(if (compact) 14.dp else 18.dp))
+        .background(visual.bgColor)
+        .let { base ->
+            if (canSummon && onSummonGemini != null) {
+                base.clickable(onClick = onSummonGemini)
+            } else {
+                base
+            }
+        }
+        .padding(
+            horizontal = if (compact) 10.dp else 14.dp,
+            vertical = if (compact) 6.dp else 10.dp,
+        )
+
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        modifier = modifier
-            .clip(RoundedCornerShape(if (compact) 14.dp else 18.dp))
-            .background(visual.bgColor)
-            .padding(
-                horizontal = if (compact) 10.dp else 14.dp,
-                vertical = if (compact) 6.dp else 10.dp,
-            ),
+        modifier = rowModifier,
     ) {
         Box(
             modifier = Modifier
@@ -159,6 +181,18 @@ private fun computeVisual(
         muted = false,
     )
 
+    // Local recognizer dead but Gemini Live is up: show "Tap to talk"
+    // so the user has a clear manual path even when wake-word is broken.
+    local == LocalCommandRecognizer.State.ERROR &&
+        voice == GeminiLiveManager.SessionState.CONNECTED -> VoiceVisual(
+        label = "Tap to talk",
+        iconColor = XREmailColors.aiAccent,
+        textColor = XREmailColors.onSurface,
+        bgColor = XREmailColors.aiAccent.copy(alpha = 0.18f),
+        pulse = true,
+        muted = false,
+    )
+
     voice == GeminiLiveManager.SessionState.ERROR ||
         local == LocalCommandRecognizer.State.ERROR -> VoiceVisual(
         label = "Voice error",
@@ -176,6 +210,16 @@ private fun computeVisual(
         textColor = XREmailColors.onSurface,
         bgColor = XREmailColors.aiAccent.copy(alpha = 0.14f),
         pulse = false,
+        muted = false,
+    )
+
+    voice == GeminiLiveManager.SessionState.CONNECTED &&
+        local == LocalCommandRecognizer.State.STARTING -> VoiceVisual(
+        label = "Voice starting…",
+        iconColor = XREmailColors.priorityMedium,
+        textColor = XREmailColors.onSurface,
+        bgColor = XREmailColors.priorityMedium.copy(alpha = 0.12f),
+        pulse = true,
         muted = false,
     )
 

@@ -11,9 +11,15 @@ import android.speech.RecognitionService
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import com.xremail.app.util.XrLog
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 
 /**
  * Always-on, on-device speech recognizer that:
@@ -53,6 +59,7 @@ class LocalCommandRecognizer(
 
     enum class State {
         IDLE,
+        STARTING,
         LISTENING,
         PAUSED,
         ERROR,
@@ -76,6 +83,26 @@ class LocalCommandRecognizer(
     private var consecutiveErrors = 0
 
     /**
+     * Components we've already tried and seen fail in this app session.
+     * Lets [ensureRecognizer] iterate through the candidate services
+     * without infinitely rebuilding on the same broken one.
+     */
+    private val brokenComponents = mutableSetOf<String>()
+    private var usingComponentLabel: String = "uninitialized"
+
+    /**
+     * Wall-clock millis at which we last called startListening. Used by
+     * the health watchdog to detect "we started a round but the recognizer
+     * never bound" — on Galaxy XR the broken on-device service silently
+     * eats startListening with no onReadyForSpeech and no onError, so
+     * we have to detect by absence.
+     */
+    @Volatile private var lastStartListeningAtMs: Long = 0L
+    @Volatile private var roundReady: Boolean = false
+    private var watchdogJob: Job? = null
+    private val watchdogScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    /**
      * Suppress duplicate dispatches: SpeechRecognizer will sometimes
      * emit a partial transcript that matches a command pattern, then
      * immediately emit the same text in onResults. Without dedup we
@@ -85,14 +112,14 @@ class LocalCommandRecognizer(
     private var lastDispatchedAtMs: Long = 0L
 
     fun start() {
-        if (_state.value == State.LISTENING) return
+        if (_state.value == State.LISTENING || _state.value == State.STARTING) return
         _lastError.value = null
         runOnMainThread {
             try {
                 ensureRecognizer()
+                _state.value = State.STARTING
                 startListeningRound()
-                _state.value = State.LISTENING
-                XrLog.i(TAG, "local-command loop started (on-device=$onDeviceAvailable)")
+                XrLog.i(TAG, "local-command loop starting (recognizer=$usingComponentLabel)")
             } catch (t: Throwable) {
                 XrLog.e(TAG, "Could not start local-command recognizer", t)
                 _lastError.value = t.message ?: t::class.simpleName
@@ -119,8 +146,8 @@ class LocalCommandRecognizer(
         if (_state.value != State.PAUSED) return
         runOnMainThread {
             try {
+                _state.value = State.STARTING
                 startListeningRound()
-                _state.value = State.LISTENING
                 XrLog.i(TAG, "local-command loop RESUMED")
             } catch (t: Throwable) {
                 XrLog.e(TAG, "Could not resume local-command recognizer", t)
@@ -150,40 +177,99 @@ class LocalCommandRecognizer(
 
     private val onDeviceAvailable: Boolean
         get() = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
-            SpeechRecognizer.isOnDeviceRecognitionAvailable(context)
+            SpeechRecognizer.isOnDeviceRecognitionAvailable(context) &&
+            !ON_DEVICE_KNOWN_BROKEN
 
     private val systemRecognizerAvailable: Boolean
         get() = SpeechRecognizer.isRecognitionAvailable(context)
 
+    /**
+     * Build a recognizer, preferring known-working pinned services over
+     * the platform on-device path.
+     *
+     * Why we don't trust [SpeechRecognizer.isOnDeviceRecognitionAvailable]:
+     * on Galaxy XR the platform reports on-device available because
+     * Android System Intelligence (com.google.android.as) advertises a
+     * service component, but the component is NOT a real
+     * [RecognitionService] — bind fails synchronously with error 10
+     * inside the recognizer, never reaching our listener. The recognizer
+     * sits silently dead, "LISTENING" is reported but no audio ever
+     * reaches us. So we skip on-device entirely on this hardware (see
+     * [ON_DEVICE_KNOWN_BROKEN]) and pin to a working RecognitionService
+     * component instead.
+     *
+     * Iteration: components we've already tried and seen fail are
+     * recorded in [brokenComponents] so a watchdog-triggered rebuild
+     * tries the next candidate instead of ping-ponging on the broken one.
+     */
     private fun ensureRecognizer() {
         if (recognizer != null) return
-        if (!systemRecognizerAvailable && !onDeviceAvailable) {
-            val anyService = context.packageManager
-                .queryIntentServices(Intent(RecognitionService.SERVICE_INTERFACE), 0)
-            if (anyService.isEmpty()) {
-                throw IllegalStateException(
-                    "No SpeechRecognizer service installed — local voice commands disabled. " +
-                        "User can still summon Gemini Live via gesture.",
-                )
+
+        val candidates = candidateComponents(context.packageManager)
+            .filter { it.flattenToString() !in brokenComponents }
+
+        val (built, label) = when {
+            candidates.isNotEmpty() -> {
+                val pinned = candidates.first()
+                XrLog.d(TAG, "Creating SpeechRecognizer pinned to ${pinned.flattenToString()}")
+                SpeechRecognizer.createSpeechRecognizer(context, pinned) to
+                    "pinned:${pinned.packageName}"
             }
-        }
-        recognizer = if (onDeviceAvailable) {
-            XrLog.d(TAG, "Creating on-device SpeechRecognizer (low-latency, private)")
-            SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
-        } else {
-            val pinned = pickRecognizerComponent(context.packageManager)
-            if (pinned != null) {
-                XrLog.d(TAG, "Creating SpeechRecognizer pinned to $pinned")
-                SpeechRecognizer.createSpeechRecognizer(context, pinned)
-            } else {
+            onDeviceAvailable -> {
+                XrLog.d(TAG, "Creating on-device SpeechRecognizer (low-latency, private)")
+                SpeechRecognizer.createOnDeviceSpeechRecognizer(context) to "on-device"
+            }
+            systemRecognizerAvailable -> {
                 XrLog.d(TAG, "Creating default SpeechRecognizer")
-                SpeechRecognizer.createSpeechRecognizer(context)
+                SpeechRecognizer.createSpeechRecognizer(context) to "default"
             }
+            else -> throw IllegalStateException(
+                "No usable SpeechRecognizer — local voice commands disabled. " +
+                    "User can still summon Gemini Live by tapping the mic.",
+            )
         }
+        recognizer = built
+        usingComponentLabel = label
         recognizer?.setRecognitionListener(listener)
     }
 
+    private fun candidateComponents(pm: PackageManager): List<ComponentName> {
+        val intent = Intent(RecognitionService.SERVICE_INTERFACE)
+        val services = pm.queryIntentServices(intent, 0)
+        // Preferred order: services that are known to actually bind on
+        // Galaxy XR / Pixel / Samsung devices. com.google.android.tts
+        // surprisingly hosts a RecognitionService that works when AiAi
+        // doesn't, so it's the top pick on Galaxy XR.
+        val preferred = listOf(
+            "com.google.android.tts",
+            "com.google.android.googlequicksearchbox",
+            "com.samsung.android.bixby.agent",
+            "com.samsung.android.bixby.service",
+        )
+        val ordered = mutableListOf<ComponentName>()
+        for (pkg in preferred) {
+            services.firstOrNull { it.serviceInfo.packageName == pkg }?.let {
+                ordered += ComponentName(it.serviceInfo.packageName, it.serviceInfo.name)
+            }
+        }
+        // Append any other discovered services as last resorts.
+        services.forEach {
+            val cn = ComponentName(it.serviceInfo.packageName, it.serviceInfo.name)
+            if (cn !in ordered) ordered += cn
+        }
+        return ordered
+    }
+
     private fun startListeningRound() {
+        // Only the first round (cold-start STARTING) needs the bind
+        // health-check watchdog. Once we've seen a successful
+        // onReadyForSpeech and promoted to LISTENING, future rounds
+        // restart instantly and a slow callback from a re-arm round is
+        // a false positive that we don't want to act on.
+        val firstColdStart = _state.value == State.STARTING && !roundReady
+        roundReady = false
+        lastStartListeningAtMs = System.currentTimeMillis()
+        if (firstColdStart) scheduleHealthWatchdog() else watchdogJob?.cancel()
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(
                 RecognizerIntent.EXTRA_LANGUAGE_MODEL,
@@ -214,7 +300,18 @@ class LocalCommandRecognizer(
     }
 
     private val listener = object : RecognitionListener {
-        override fun onReadyForSpeech(params: Bundle?) {}
+        override fun onReadyForSpeech(params: Bundle?) {
+            roundReady = true
+            watchdogJob?.cancel()
+            // First successful onReadyForSpeech is our signal that the
+            // recognizer service has actually bound and is listening for
+            // real audio. Until this fires we sit in STARTING — UI shows
+            // "Voice starting…" instead of falsely claiming "Listening".
+            if (_state.value == State.STARTING) {
+                _state.value = State.LISTENING
+                XrLog.i(TAG, "recognizer onReadyForSpeech -> LISTENING (component=$usingComponentLabel)")
+            }
+        }
         override fun onBeginningOfSpeech() {}
         override fun onRmsChanged(rmsdB: Float) {}
         override fun onBufferReceived(buffer: ByteArray?) {}
@@ -254,16 +351,87 @@ class LocalCommandRecognizer(
             val benign = error == SpeechRecognizer.ERROR_NO_MATCH ||
                 error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT
             if (!benign) {
-                XrLog.w(TAG, "recognizer onError=$name (consec=$consecutiveErrors)")
+                XrLog.w(TAG, "recognizer onError=$name (consec=$consecutiveErrors component=$usingComponentLabel)")
                 consecutiveErrors++
                 _lastError.value = name
+            }
+            // If the component never bound (no onReadyForSpeech ever
+            // fired before erroring out), it's broken on this device.
+            // Mark it broken and rebuild with the next candidate.
+            val didBind = roundReady
+            if (!didBind && (error == SpeechRecognizer.ERROR_CLIENT ||
+                    error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS)) {
+                markCurrentComponentBrokenAndRebuild("error=$name before bind")
+                return
             }
             if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
                 XrLog.e(TAG, "local-command loop giving up after $consecutiveErrors errors ($name)")
                 _state.value = State.ERROR
                 return
             }
-            if (_state.value == State.LISTENING) startListeningRound()
+            if (_state.value == State.LISTENING || _state.value == State.STARTING) {
+                startListeningRound()
+            }
+        }
+    }
+
+    /**
+     * Schedules a one-shot watchdog that fires [HEALTH_TIMEOUT_MS] after
+     * [startListeningRound]. If by then we still haven't seen
+     * [onReadyForSpeech] for this round, the bound recognition service is
+     * silently dead (the Galaxy XR AiAi failure mode) — we mark the
+     * component broken and rebuild with the next candidate.
+     */
+    private fun scheduleHealthWatchdog() {
+        watchdogJob?.cancel()
+        val roundStart = lastStartListeningAtMs
+        watchdogJob = watchdogScope.launch {
+            delay(HEALTH_TIMEOUT_MS)
+            // Skip if a newer round superseded us (state changed) or the
+            // round bound successfully.
+            if (lastStartListeningAtMs != roundStart) return@launch
+            if (roundReady) return@launch
+            if (_state.value != State.STARTING) return@launch
+            runOnMainThread {
+                markCurrentComponentBrokenAndRebuild(
+                    "no onReadyForSpeech within ${HEALTH_TIMEOUT_MS}ms",
+                )
+            }
+        }
+    }
+
+    private fun markCurrentComponentBrokenAndRebuild(reason: String) {
+        val brokenLabel = usingComponentLabel
+        XrLog.w(TAG, "marking $brokenLabel BROKEN ($reason); trying next recognizer")
+        if (brokenLabel.startsWith("pinned:")) {
+            // Find the actual ComponentName flatten string we used so
+            // candidateComponents() filters it out next time.
+            val pkg = brokenLabel.removePrefix("pinned:")
+            val pm = context.packageManager
+            val intent = Intent(RecognitionService.SERVICE_INTERFACE)
+            pm.queryIntentServices(intent, 0).firstOrNull {
+                it.serviceInfo.packageName == pkg
+            }?.let {
+                brokenComponents += ComponentName(
+                    it.serviceInfo.packageName, it.serviceInfo.name,
+                ).flattenToString()
+            }
+        }
+        try {
+            recognizer?.cancel()
+            recognizer?.destroy()
+        } catch (_: Throwable) { /* best effort */ }
+        recognizer = null
+        usingComponentLabel = "uninitialized"
+        roundReady = false
+        try {
+            ensureRecognizer()
+            startListeningRound()
+            // Stay in STARTING; onReadyForSpeech will promote to LISTENING.
+        } catch (t: Throwable) {
+            XrLog.e(TAG, "no working recognizer left after rebuild — local voice disabled", t)
+            _lastError.value = "no working recognizer (${t.message ?: "unknown"})"
+            _state.value = State.ERROR
         }
     }
 
@@ -333,28 +501,25 @@ class LocalCommandRecognizer(
         }
     }
 
-    private fun pickRecognizerComponent(pm: PackageManager): ComponentName? {
-        val intent = Intent(RecognitionService.SERVICE_INTERFACE)
-        val services = pm.queryIntentServices(intent, 0)
-        val preferred = listOf(
-            "com.google.android.googlequicksearchbox",
-            "com.google.android.tts",
-            "com.samsung.android.bixby.agent",
-            "com.samsung.android.bixby.service",
-        )
-        for (pkg in preferred) {
-            val match = services.firstOrNull { it.serviceInfo.packageName == pkg }
-            if (match != null) {
-                return ComponentName(match.serviceInfo.packageName, match.serviceInfo.name)
-            }
-        }
-        val anyMatch = services.firstOrNull() ?: return null
-        return ComponentName(anyMatch.serviceInfo.packageName, anyMatch.serviceInfo.name)
-    }
-
     companion object {
         private const val TAG = "LocalCmdRecog"
         private const val MAX_CONSECUTIVE_ERRORS = 6
+        // Galaxy XR's on-device recognition advertised by Android System
+        // Intelligence (com.google.android.as) is registered but not a
+        // real RecognitionService — bind fails inside the framework with
+        // error 10 and never surfaces to onError. Skipping the on-device
+        // path entirely and pinning to com.google.android.tts works.
+        // Flip this to false once Samsung ships a working on-device
+        // recognizer.
+        private const val ON_DEVICE_KNOWN_BROKEN = true
+
+        // Maximum time to wait for the FIRST recognizer round to call
+        // onReadyForSpeech. On Galaxy XR the Google TTS recognizer cold-
+        // starts in ~1.9 s (loads the SODA on-device language pack), so
+        // 1500 ms was racing against legit successful starts. 4000 ms
+        // gives the slow service room while still pivoting before the
+        // user reads the "Voice starting…" label twice.
+        private const val HEALTH_TIMEOUT_MS = 4_000L
 
         // Silence-window tuning. Wider than [WakeWordDetector] because
         // we need the WHOLE utterance ("hey gemini archive this") in

@@ -141,6 +141,7 @@ fun InteractionTierRouter(
     onSend: () -> Unit,
     onCancelCompose: () -> Unit,
     onDismissToast: () -> Unit,
+    onSummonGemini: () -> Unit = {},
 ) {
     val keyEventModifier = Modifier
         .onPreviewKeyEvent { event: KeyEvent ->
@@ -179,6 +180,7 @@ fun InteractionTierRouter(
             MainPanelPlaceholder(
                 voiceSessionState = voiceSessionState,
                 localRecognizerState = localRecognizerState,
+                onSummonGemini = onSummonGemini,
             )
         } else {
             // Emulator / no headset: render the active tier here so dev
@@ -204,6 +206,7 @@ fun InteractionTierRouter(
                 onArchiveEmail = onArchiveEmail,
                 onSnoozeEmail = onSnoozeEmail,
                 onDismissToast = onDismissToast,
+                onSummonGemini = onSummonGemini,
             )
         }
     }
@@ -365,6 +368,7 @@ fun InteractionTierRouter(
                             onArchiveEmail = onArchiveEmail,
                             onSnoozeEmail = onSnoozeEmail,
                             onDismissToast = onDismissToast,
+                            onSummonGemini = onSummonGemini,
                         )
                     }
                 }
@@ -409,6 +413,7 @@ fun InteractionTierRouter(
 private fun MainPanelPlaceholder(
     voiceSessionState: GeminiLiveManager.SessionState,
     localRecognizerState: LocalCommandRecognizer.State,
+    onSummonGemini: () -> Unit = {},
 ) {
     Box(
         modifier = Modifier.fillMaxSize().padding(32.dp),
@@ -434,6 +439,7 @@ private fun MainPanelPlaceholder(
             VoicePrompt(
                 voiceState = voiceSessionState,
                 localState = localRecognizerState,
+                onSummonGemini = onSummonGemini,
             )
         }
     }
@@ -467,6 +473,7 @@ private fun PeripheralTierContent(
     onArchiveEmail: (Email) -> Unit,
     onSnoozeEmail: (Email) -> Unit,
     onDismissToast: () -> Unit,
+    onSummonGemini: () -> Unit = {},
 ) {
     Column(
         modifier = Modifier.fillMaxSize().padding(12.dp),
@@ -481,6 +488,7 @@ private fun PeripheralTierContent(
                 voiceState = voiceSessionState,
                 localState = localRecognizerState,
                 compact = true,
+                onSummonGemini = onSummonGemini,
                 modifier = Modifier.weight(1f, fill = false),
             )
             // Visible collapse affordance — only when there's somewhere
@@ -613,6 +621,7 @@ private fun FallbackTierContent(
     onArchiveEmail: (Email) -> Unit,
     onSnoozeEmail: (Email) -> Unit,
     onDismissToast: () -> Unit,
+    onSummonGemini: () -> Unit = {},
 ) {
     Box(modifier = Modifier.fillMaxSize().padding(20.dp)) {
         Column(
@@ -638,6 +647,7 @@ private fun FallbackTierContent(
                     voiceState = voiceSessionState,
                     localState = localRecognizerState,
                     compact = true,
+                    onSummonGemini = onSummonGemini,
                 )
             }
             PeripheralTierContent(
@@ -662,6 +672,7 @@ private fun FallbackTierContent(
                 onArchiveEmail = onArchiveEmail,
                 onSnoozeEmail = onSnoozeEmail,
                 onDismissToast = onDismissToast,
+                onSummonGemini = onSummonGemini,
             )
         }
     }
