@@ -276,34 +276,45 @@ fun InteractionTierRouter(
                 InteractionTier.NOTIFICATION_CARDS -> 380.dp
                 else -> 480.dp
             }
-            // NOTIFICATION_CARDS height = chrome (header + voice prompt +
-            // collapse affordance + footer hint + outer padding) plus the
-            // actual visible card count. Without this, an inbox with 1
-            // unread email would render in a panel sized for 5 — exactly
-            // the "still really big with empty space around them" the
-            // user complained about after collapsing back from FOCUS.
+            // NOTIFICATION_CARDS height = chrome (voice prompt row +
+            // collapse affordance + outer padding + stack header + stack
+            // padding) plus actual visible card count.
             //
-            // Magic numbers tuned to the current NotificationCardStack /
-            // NotificationCard layout. If those padding/sizes change,
-            // bump CHROME_DP / PER_CARD_DP accordingly.
-            val visibleNotifCards = uiState.unreadCount
-                .coerceAtMost(5)
-                .coerceAtLeast(1)
+            // We use the LIVE unread count (not coerceAtLeast(1)) so when
+            // the stack is empty — which happens after the user reads
+            // every email in FOCUS and collapses back here — the panel
+            // shrinks to the inbox-zero pill instead of leaving 200dp
+            // of empty space around it.
+            //
+            // Magic numbers were re-measured 2026-04-19 against the
+            // tightened NotificationCardStack (8dp inner padding, 6dp
+            // inter-row spacing, no footer hints row).
+            val visibleNotifCards = uiState.unreadCount.coerceAtMost(5)
             val panelHeight = when (uiState.tier) {
                 // Just a small ambient banner + voice prompt + hint.
                 // 240 had ~70dp of dead space below the banner; 200 is
                 // tight to the actual content.
                 InteractionTier.AMBIENT_HUD -> 200.dp
                 InteractionTier.NOTIFICATION_CARDS -> {
-                    val CHROME_DP = 180
-                    val PER_CARD_DP = 70
-                    val computed = CHROME_DP + visibleNotifCards * PER_CARD_DP
-                    // Clamp: never grow past 540 (one cards-worth shy of
-                    // the old 460 hard cap was still cramped at 5; 540
-                    // gives the 5th card room to breathe). Never shrink
-                    // below 240 — below that the header row + hint look
-                    // squashed even with 0 cards.
-                    computed.coerceIn(240, 540).dp
+                    if (visibleNotifCards == 0) {
+                        // Just the inbox-zero pill + collapse affordance
+                        // + voice prompt row + outer padding.
+                        140.dp
+                    } else {
+                        // CHROME_DP covers: 12dp×2 outer Column padding +
+                        // ~32dp voice/affordance row + 10dp spacedBy +
+                        // 8dp×2 stack inner padding + ~24dp stack header
+                        // row + 6dp spacedBy below header. ≈ 110dp.
+                        val CHROME_DP = 110
+                        // PER_CARD_DP: card content height ~62dp + 6dp
+                        // inter-row spacing.
+                        val PER_CARD_DP = 68
+                        val computed = CHROME_DP + visibleNotifCards * PER_CARD_DP
+                        // Clamp: never grow past 500 (5 cards × 68 +
+                        // chrome = 450, +50 slack), never shrink below
+                        // the 1-card height of 178.
+                        computed.coerceIn(178, 500).dp
+                    }
                 }
                 else -> 680.dp
             }
@@ -527,13 +538,13 @@ private fun PeripheralTierContent(
                     onSnoozeEmail = onSnoozeEmail,
                     onCollapseToHud = onCollapseFromNotifications,
                     onExpandToInbox = onExpandToInbox,
-                    modifier = Modifier.fillMaxWidth().weight(1f, fill = false),
-                )
-                Text(
-                    text = "Pinch a card to open it",
-                    color = XREmailColors.onSurfaceDim,
                     modifier = Modifier.fillMaxWidth(),
                 )
+                // No outer hint here — the stack's own header shows count
+                // + close, and the collapse affordance ring above shows
+                // how to back out. Adding a "Pinch a card to open it"
+                // line below was 22dp of dead space and a duplicate of
+                // information the user has already learned.
             }
 
             InteractionTier.INBOX -> {

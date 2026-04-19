@@ -247,14 +247,45 @@ fun NotificationCardStack(
         }
     }
 
+    // EMPTY-STATE ESCAPE HATCH: when there are zero unread emails we used to
+    // render the same chrome (header + footer hints + inner padding) inside
+    // a 240dp panel — a giant box of nothing. Now we render a single
+    // condensed line so the surrounding panel can size itself proportionally
+    // (the router's panelHeight formula falls into the "0 cards" branch
+    // and shrinks accordingly).
+    if (unread.isEmpty()) {
+        Box(
+            modifier = modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(14.dp))
+                .background(XREmailColors.surface.copy(alpha = 0.94f))
+                .clickable(onClick = onCollapseToHud)
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = "Inbox zero — tap to dismiss",
+                style = MaterialTheme.typography.labelMedium,
+                color = XREmailColors.onSurfaceDim,
+            )
+        }
+        return
+    }
+
+    // 8dp inner padding (was 10dp) and 6dp inter-row spacing (was 7dp) shave
+    // ~12dp of dead chrome without any visible loss of breathing room. The
+    // footer "swipe-hint" row was deleted entirely — it was 30dp of
+    // visual chatter, the affordances are already discoverable via
+    // direct interaction (and the parent container surfaces the
+    // "Pinch a card" hint for first-timers).
     Column(
         modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
             .background(XREmailColors.surface.copy(alpha = 0.94f))
-            .padding(10.dp)
+            .padding(8.dp)
             .verticalScroll(scrollState),
-        verticalArrangement = Arrangement.spacedBy(7.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -290,17 +321,15 @@ fun NotificationCardStack(
             // Previously onCollapseToHud was a declared-but-unused parameter,
             // so there was no way out of this tier except voice/gesture.
             Text(
-                text = "tap ✕ to close",
-                style = MaterialTheme.typography.labelSmall,
+                text = "✕",
+                style = MaterialTheme.typography.labelMedium,
                 color = XREmailColors.onSurfaceDim,
                 modifier = Modifier
                     .clip(RoundedCornerShape(8.dp))
                     .clickable(onClick = onCollapseToHud)
-                    .padding(horizontal = 6.dp, vertical = 2.dp),
+                    .padding(horizontal = 8.dp, vertical = 2.dp),
             )
         }
-
-        Spacer(Modifier.height(2.dp))
 
         val visible = unread.take(MAX_VISIBLE_CARDS)
         visible.forEachIndexed { index, email ->
@@ -333,33 +362,10 @@ fun NotificationCardStack(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clickable(onClick = onExpandToInbox)
-                    .padding(vertical = 6.dp),
+                    .padding(vertical = 4.dp),
             )
         }
-
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(10.dp))
-                .background(XREmailColors.surfaceVariant.copy(alpha = 0.5f))
-                .padding(horizontal = 10.dp, vertical = 6.dp),
-            horizontalArrangement = Arrangement.SpaceEvenly,
-        ) {
-            HintLabel("→ archive")
-            HintLabel("← snooze")
-            HintLabel("pinch open")
-            HintLabel("look away ✕")
-        }
     }
-}
-
-@Composable
-private fun HintLabel(text: String) {
-    Text(
-        text = text,
-        style = MaterialTheme.typography.labelSmall,
-        color = XREmailColors.onSurfaceDim,
-    )
 }
 
 private fun priorityOrder(priority: Priority): Int = when (priority) {

@@ -27,13 +27,21 @@ private const val TAG = "HandGestures"
 // genuinely deliberate pinch.
 private const val PINCH_DISTANCE_THRESHOLD = 0.025f
 // Pinch-hold duration before we fire PINCH_HOLD_EXPAND (tier expansion).
-// Was 600ms which felt sluggish — the user explicitly asked for "panels to
-// expand and collapse very quickly and responsively". 350ms is the sweet
-// spot: long enough that an incidental pinch (released in <100ms) won't
-// trip it thanks to the PINCH_TAP_MIN_HOLD_MS filter, short enough that
-// the deliberate "I want to expand" hold completes before the user
-// notices any latency.
-private const val PINCH_HOLD_DURATION_MS = 350L
+//
+// History: 600ms felt sluggish, dropped to 350ms for snappier feel — but
+// the user reported the HUD "opens without a gesture sometimes" with
+// the 350 setting. Diagnosis: 350ms is shorter than the time the user's
+// SECONDARY (non-dominant) hand spends in an incidental pinch-like pose
+// while holding a coffee, walking with arms swinging, gripping a phone,
+// etc. Thumb-index naturally sit within 2.5cm during plenty of unrelated
+// hand activity, and 350ms is well inside that envelope.
+//
+// 550ms is well past any incidental pose duration but still feels
+// responsive when the user is *intentionally* holding a deliberate
+// pinch ("I am doing a thing"). Combined with PINCH_TAP_MIN_HOLD_MS
+// filtering ghost pinches at the bottom, the false-positive rate
+// drops to near zero.
+private const val PINCH_HOLD_DURATION_MS = 550L
 // Minimum pinch hold time before a release counts as PINCH_SELECT (tap).
 // Single-frame "ghost pinches" from tracking jitter clear in <50ms; a
 // deliberate tap is at least ~80ms. This filters out the noise.
