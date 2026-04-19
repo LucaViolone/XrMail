@@ -36,19 +36,22 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import com.xremail.app.data.Email
+import com.xremail.app.ui.notifications.NotificationBanner
 import com.xremail.app.ui.theme.XREmailColors
 import com.xremail.app.viewmodel.ToastMessage
 import com.xremail.app.voice.GeminiLiveManager
 import com.xremail.app.voice.TTSManager
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
 
 /**
  * Peripheral HUD for walking/on-the-go use.
  * Shows: notification banner (iPhone-style with sender preview + count),
  * TTS progress, voice status, and toasts.
- * Gaze dwell on the banner triggers expansion to NOTIFICATION_CARDS tier.
+ *
+ * The banner is plain-clickable (pinch in XR, tap on emulator) — gaze-dwell
+ * expansion was removed per user feedback. Tier expansion is now exclusively
+ * driven by the explicit pinch gesture on the banner OR the global
+ * PINCH_HOLD_EXPAND / PINCH_SELECT hand gesture (see GestureToActionMapper).
  */
 @Composable
 fun AmbientHud(
@@ -62,23 +65,14 @@ fun AmbientHud(
     onExpandToNotifications: () -> Unit,
     onDismissToast: () -> Unit,
     modifier: Modifier = Modifier,
-    /**
-     * Wall-clock millis of the most recent pinch/click. Used by
-     * [GazeDwellNotificationBanner] to suppress dwell-expansion immediately
-     * after an interaction so the user doesn't accidentally re-open what
-     * they just dismissed. Defaults to a never-fired flow so this composable
-     * still renders correctly in previews / 2D mode.
-     */
-    lastInteractionMs: StateFlow<Long> = remember { MutableStateFlow(0L) },
-    onBumpInteraction: () -> Unit = {},
 ) {
     Column(
         modifier = modifier
-            .width(280.dp)
+            .width(360.dp)
             .clip(RoundedCornerShape(20.dp))
-            .background(XREmailColors.surface.copy(alpha = 0.92f))
-            .padding(14.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+            .background(XREmailColors.surface.copy(alpha = 0.95f))
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -88,10 +82,8 @@ fun AmbientHud(
             VoiceStatusIndicator(voiceState = voiceState)
         }
 
-        GazeDwellNotificationBanner(
+        NotificationBanner(
             emails = emails,
-            lastInteractionMs = lastInteractionMs,
-            onBumpInteraction = onBumpInteraction,
             onExpand = onExpandToNotifications,
         )
 

@@ -66,12 +66,20 @@ class GestureToActionMapper(
     }
 
     private fun handleAmbientGesture(gesture: SecondaryHandGestures.Gesture) {
+        // ONLY the deliberate long-pinch (PINCH_HOLD_EXPAND, ≥600ms held)
+        // expands. Short PINCH_SELECT taps are ignored here because
+        // hand-tracking flicker — a brief moment where thumb and index
+        // happen to be within the pinch threshold — was firing
+        // PINCH_SELECT and instantly expanding the HUD without the user
+        // having intended any gesture. The user still has the on-panel
+        // "Pinch to expand" tap target if they want quick expansion via
+        // direct interaction with the visible banner.
         when (gesture) {
-            SecondaryHandGestures.Gesture.PINCH_SELECT -> {
-                Log.d(TAG, "  -> expandToNotificationCards()")
+            SecondaryHandGestures.Gesture.PINCH_HOLD_EXPAND -> {
+                Log.d(TAG, "  -> expandToNotificationCards() (PINCH_HOLD_EXPAND)")
                 viewModel.expandToNotificationCards()
             }
-            else -> { /* no-op in ambient — gaze handles expansion */ }
+            else -> { /* no-op in ambient — every other gesture suppressed */ }
         }
     }
 

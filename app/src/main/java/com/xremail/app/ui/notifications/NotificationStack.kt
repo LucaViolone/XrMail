@@ -249,12 +249,12 @@ fun NotificationCardStack(
 
     Column(
         modifier = modifier
-            .width(320.dp)
+            .fillMaxWidth()
             .clip(RoundedCornerShape(18.dp))
             .background(XREmailColors.surface.copy(alpha = 0.94f))
             .padding(12.dp)
             .verticalScroll(scrollState),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),

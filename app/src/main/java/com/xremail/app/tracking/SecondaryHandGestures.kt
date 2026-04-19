@@ -21,8 +21,16 @@ import kotlinx.coroutines.launch
 
 private const val TAG = "HandGestures"
 
-private const val PINCH_DISTANCE_THRESHOLD = 0.04f
+// Tighter pinch threshold (was 0.04 = 4cm). Hand-tracking noise on Galaxy XR
+// would intermittently report thumb-index within 4cm even when the user's
+// hand was at rest, firing spurious PINCH_SELECT events. 2.5cm requires a
+// genuinely deliberate pinch.
+private const val PINCH_DISTANCE_THRESHOLD = 0.025f
 private const val PINCH_HOLD_DURATION_MS = 600L
+// Minimum pinch hold time before a release counts as PINCH_SELECT (tap).
+// Single-frame "ghost pinches" from tracking jitter clear in <50ms; a
+// deliberate tap is at least ~80ms. This filters out the noise.
+private const val PINCH_TAP_MIN_HOLD_MS = 80L
 private const val SWIPE_DISTANCE_THRESHOLD = 0.08f
 private const val SWIPE_VELOCITY_THRESHOLD = 0.15f
 private const val DEDUP_WINDOW_MS = 250L
@@ -40,8 +48,14 @@ private const val OPEN_PALM_DEDUP_WINDOW_MS = 1_500L
 // joint that we consider "extended". Hands at rest curl ~3-4cm; deliberate
 // "stop / go back" palm extends to ~7-9cm. Tuned so a relaxed hand at the
 // user's side doesn't constantly fire OPEN_PALM_HOLD on the secondary hand.
-private const val OPEN_PALM_FINGER_EXTEND_MIN_M = 0.06f
-private const val OPEN_PALM_HOLD_DURATION_MS = 700L
+// Required finger extension for the open-palm "stop" gesture. Bumped from
+// 6cm to 8cm so a relaxed hand at rest (fingers naturally splayed when
+// arm is at user's side) doesn't satisfy the threshold.
+private const val OPEN_PALM_FINGER_EXTEND_MIN_M = 0.08f
+// Hold duration for collapse. Bumped from 700ms to 1000ms so a brief
+// open palm during, say, a wave or ambient hand motion doesn't fire
+// the collapse gesture.
+private const val OPEN_PALM_HOLD_DURATION_MS = 1000L
 // Once OPEN_PALM_HOLD fires we lock it out until the user fully closes the
 // hand again — without this, holding the palm extended for 2s fires once
 // then re-fires at every dedup-window boundary as the timer keeps ticking.
@@ -100,6 +114,16 @@ class SecondaryHandGestures {
      */
     private val _lastInteractionMs = MutableStateFlow(0L)
     val lastInteractionMs: StateFlow<Long> = _lastInteractionMs.asStateFlow()
+
+    /**
+     * Live progress of the open-palm "collapse" hold, 0f → 1f.
+     * 0f when the user is not holding an open palm, ramps up while held,
+     * snaps to 1f at the moment OPEN_PALM_HOLD_COLLAPSE fires, then drops
+     * back to 0f. Drives the peripheral panel's visible collapse-affordance
+     * ring so the user can SEE the gesture being recognized in real time.
+     */
+    private val _openPalmProgress = MutableStateFlow(0f)
+    val openPalmProgress: StateFlow<Float> = _openPalmProgress.asStateFlow()
 
     private var trackingJobs: List<Job> = emptyList()
     private val handStates = mutableMapOf<String, HandState>()
@@ -189,6 +213,7 @@ class SecondaryHandGestures {
         trackingJobs = emptyList()
         handStates.values.forEach { it.reset() }
         handStates.clear()
+        _openPalmProgress.value = 0f
     }
 
     /**
@@ -283,8 +308,16 @@ class SecondaryHandGestures {
 
         if (!s.isPinching && wasPinching && !s.pinchEmitted) {
             val held = now - s.pinchStartTimeMs
-            XrLog.d(TAG, "${s.label} pinch RELEASE held=${held}ms -> PINCH_SELECT")
-            emit(Gesture.PINCH_SELECT, s)
+            if (held < PINCH_TAP_MIN_HOLD_MS) {
+                // Filter sub-80ms "ghost pinches" — these are tracking
+                // jitter, not user intent. The user reported the HUD
+                // "expanding without me doing a gesture" and these
+                // single-frame pinch flickers were the cause.
+                XrLog.v(TAG, "${s.label} pinch RELEASE held=${held}ms -> SUPPRESSED (below tap min)")
+            } else {
+                XrLog.d(TAG, "${s.label} pinch RELEASE held=${held}ms -> PINCH_SELECT")
+                emit(Gesture.PINCH_SELECT, s)
+            }
         }
     }
 
@@ -346,11 +379,19 @@ class SecondaryHandGestures {
 
         if (openNow && !s.openPalmEmitted) {
             val held = now - s.openPalmStartTimeMs
+            val progress = (held.toFloat() / OPEN_PALM_HOLD_DURATION_MS).coerceIn(0f, 1f)
+            _openPalmProgress.value = progress
             if (held >= OPEN_PALM_HOLD_DURATION_MS) {
                 XrLog.d(TAG, "${s.label} open-palm HOLD ${held}ms -> OPEN_PALM_HOLD_COLLAPSE")
+                _openPalmProgress.value = 1f
                 emit(Gesture.OPEN_PALM_HOLD_COLLAPSE, s)
                 s.openPalmEmitted = true
             }
+        } else if (!openNow && _openPalmProgress.value != 0f) {
+            // User released the palm before the threshold (or after the
+            // gesture fired) — reset the progress meter so the UI ring
+            // empties out cleanly.
+            _openPalmProgress.value = 0f
         }
 
         s.wasOpenPalm = openNow

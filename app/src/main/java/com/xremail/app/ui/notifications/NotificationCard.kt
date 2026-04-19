@@ -8,8 +8,11 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -35,6 +38,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -126,6 +130,7 @@ fun NotificationCard(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun NotificationCardContent(
     email: Email,
@@ -139,10 +144,19 @@ private fun NotificationCardContent(
         Priority.IGNORE -> XREmailColors.onSurfaceDim
     }
 
-    val bgColor = if (isHighlighted) {
-        XREmailColors.surfaceElevated
-    } else {
-        XREmailColors.surfaceVariant.copy(alpha = 0.85f)
+    // HOLD-TO-OPEN: a quick gaze+pinch tap from the OS used to immediately
+    // fire onClick and open the email (the user reported "it shouldn't
+    // open just on me looking at one of the emails"). We now bind onClick
+    // to a NO-OP and require a long-press (~500ms hold) to actually open.
+    // This filters out incidental pinches and matches the rest of the
+    // tier-escalation model where deeper actions need a deliberate hold.
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+
+    val bgColor = when {
+        isPressed -> XREmailColors.surfaceElevated
+        isHighlighted -> XREmailColors.surfaceElevated
+        else -> XREmailColors.surfaceVariant.copy(alpha = 0.85f)
     }
 
     Row(
@@ -150,30 +164,28 @@ private fun NotificationCardContent(
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
             .background(bgColor)
-            // IMPORTANT: the whole card is the tap target — without this,
-            // NotificationCardStack's onSelectEmail never fires. The SwipeToDismissBox
-            // above only handles horizontal gestures; vertical/click needs its own
-            // handler here. Order matters: clickable BEFORE padding so the entire
-            // visible rectangle (not just the inner content area) is hittable.
-            .clickable(onClick = onClick)
-            .padding(12.dp),
+            .combinedClickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = { /* intentionally no-op — see hold-to-open note above */ },
+                onLongClick = onClick,
+            )
+            .padding(horizontal = 14.dp, vertical = 16.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // Priority strip — thick left bar for visibility while walking
         Box(
             modifier = Modifier
-                .width(4.dp)
-                .height(40.dp)
-                .clip(RoundedCornerShape(2.dp))
+                .width(5.dp)
+                .height(52.dp)
+                .clip(RoundedCornerShape(3.dp))
                 .background(priorityColor),
         )
 
-        Spacer(Modifier.width(10.dp))
+        Spacer(Modifier.width(12.dp))
 
-        // Avatar circle
         Box(
             modifier = Modifier
-                .size(36.dp)
+                .size(44.dp)
                 .clip(CircleShape)
                 .background(priorityColor.copy(alpha = 0.2f)),
             contentAlignment = Alignment.Center,

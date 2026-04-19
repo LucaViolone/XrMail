@@ -380,26 +380,19 @@ private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
         }
     }
 
-    // Speak the AI summary whenever the selected email changes — but ONLY
-    // when Gemini Live isn't actively speaking. Without this guard the user
-    // hears the local TTS narrator and Gemini's voice talking over each
-    // other, which feels like a 1-2 second delay even when both responses
-    // arrive instantly. The guard is "if the model is mid-turn, the model
-    // owns the audio output; let the user ask 'summarize this' if they
-    // also want the local narration."
-    LaunchedEffect(Unit) {
-        viewModel.uiState
-            .map { it.selectedEmail?.id to it.selectedEmail?.aiSummary }
-            .distinctUntilChanged()
-            .collect { (_, summary) ->
-                if (summary.isNullOrBlank()) return@collect
-                if (geminiLive.modelSpeaking.value) {
-                    XrLog.v("VoiceTTS", "auto-summary suppressed: Gemini Live is speaking")
-                    return@collect
-                }
-                ttsManager.speak(summary)
-            }
-    }
+    // Auto-summary TTS is INTENTIONALLY DISABLED.
+    //
+    // User directive (verbatim): "Gemini should only talk if I ask it to
+    // and say the 'Hey Gemini'." So no unsolicited narration at all,
+    // regardless of tier. Spoken summary is now opt-in via voice command:
+    // the user says "Hey Gemini, summarize this" (or "read this") and
+    // Gemini Live (or the local dispatcher's "read" command in
+    // VoiceCommandDispatcher) reads it back.
+    //
+    // The previous LaunchedEffect that watched selectedEmail.aiSummary
+    // and called ttsManager.speak(summary) on change has been removed.
+    // Leaving this block as documentation so future contributors don't
+    // re-introduce the auto-narration without checking with the user.
 
     // NOTE: we used to fire `geminiLive.sendContextUpdate(...)` on every
     // selection change. That counted as a user-role turn and frequently
@@ -430,6 +423,7 @@ private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
     val ttsState by ttsManager.playbackState.collectAsStateWithLifecycle()
     val ttsProgress by ttsManager.progress.collectAsStateWithLifecycle()
     val voiceSessionState by geminiLive.state.collectAsStateWithLifecycle()
+    val localRecognizerState by localCommands.state.collectAsStateWithLifecycle()
     val voiceComposeState by voiceCompose.state.collectAsStateWithLifecycle()
     val voiceDraft by voiceCompose.draft.collectAsStateWithLifecycle()
     val tiltScrollDelta by tiltScroll.scrollDelta.collectAsStateWithLifecycle()
@@ -545,6 +539,7 @@ private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
             ttsProgress = ttsProgress,
             tiltScrollDelta = tiltScrollDelta,
             voiceSessionState = voiceSessionState,
+            localRecognizerState = localRecognizerState,
             voiceComposeState = voiceComposeState,
             voiceDraft = voiceDraft,
             handGestures = handGestures,
