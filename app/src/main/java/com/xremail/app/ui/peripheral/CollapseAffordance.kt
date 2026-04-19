@@ -30,21 +30,21 @@ import androidx.compose.ui.unit.dp
 import com.xremail.app.ui.theme.XREmailColors
 
 /**
- * Visible affordance for the open-palm-hold collapse gesture. Lives at the
- * top of every non-AMBIENT peripheral tier so the user always knows:
+ * Visible affordance for the closed-fist-hold collapse gesture. Lives at
+ * the top of every non-AMBIENT peripheral tier so the user always knows:
  *
  *   1. THAT a collapse gesture exists (vs. having to discover it).
- *   2. WHAT the gesture is (open palm, distinct from pinch).
+ *   2. WHAT the gesture is (closed fist, distinct from pinch).
  *   3. HOW MUCH MORE they have to hold (the ring fills as they hold).
  *
  * The ring fills based on [progress] (0f → 1f), driven by
- * [com.xremail.app.tracking.SecondaryHandGestures.openPalmProgress].
+ * [com.xremail.app.tracking.SecondaryHandGestures.closedFistProgress].
  * When it hits 1f the gesture has fired and the panel collapses one tier.
  */
 @Composable
 fun CollapseAffordance(
     progress: Float,
-    label: String = "Hold open palm to collapse",
+    label: String = "Hold closed fist to collapse",
     modifier: Modifier = Modifier,
 ) {
     val animProgress by animateFloatAsState(

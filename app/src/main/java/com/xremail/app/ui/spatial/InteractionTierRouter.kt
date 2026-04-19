@@ -152,10 +152,10 @@ fun InteractionTierRouter(
     val xrSession = LocalSession.current
     val canUsePeripheral = deviceTrackingReady && xrSession != null
 
-    // Live 0f→1f progress of the user's open-palm "collapse" hold.
+    // Live 0f→1f progress of the user's closed-fist "collapse" hold.
     // Drives the CollapseAffordance ring so users see real-time feedback
     // as they perform the gesture (and can release to cancel mid-hold).
-    val openPalmProgress by (handGestures?.openPalmProgress
+    val closedFistProgress by (handGestures?.closedFistProgress
         ?: kotlinx.coroutines.flow.MutableStateFlow(0f)).collectAsState()
 
     LaunchedEffect(uiState.tier, canUsePeripheral) {
@@ -195,7 +195,7 @@ fun InteractionTierRouter(
                 localRecognizerState = localRecognizerState,
                 voiceComposeState = voiceComposeState,
                 voiceDraft = voiceDraft,
-                openPalmProgress = openPalmProgress,
+                closedFistProgress = closedFistProgress,
                 onExpandToNotifications = onExpandToNotifications,
                 onCollapseFromNotifications = onCollapseFromNotifications,
                 onExpandToInbox = onExpandToInbox,
@@ -357,7 +357,7 @@ fun InteractionTierRouter(
                             localRecognizerState = localRecognizerState,
                             voiceComposeState = voiceComposeState,
                             voiceDraft = voiceDraft,
-                            openPalmProgress = openPalmProgress,
+                            closedFistProgress = closedFistProgress,
                             onExpandToNotifications = onExpandToNotifications,
                             onCollapseFromNotifications = onCollapseFromNotifications,
                             onExpandToInbox = onExpandToInbox,
@@ -462,7 +462,7 @@ private fun PeripheralTierContent(
     localRecognizerState: LocalCommandRecognizer.State,
     @Suppress("UNUSED_PARAMETER") voiceComposeState: VoiceComposeManager.ComposeState,
     voiceDraft: VoiceDraft?,
-    openPalmProgress: Float,
+    closedFistProgress: Float,
     onExpandToNotifications: () -> Unit,
     onCollapseFromNotifications: () -> Unit,
     onExpandToInbox: () -> Unit,
@@ -493,18 +493,18 @@ private fun PeripheralTierContent(
             )
             // Visible collapse affordance — only when there's somewhere
             // to collapse to. AMBIENT_HUD is the floor of the tier
-            // hierarchy so it doesn't get one (open-palm there is a no-op
-            // in the gesture mapper anyway). Ring fills 0→1 as the user
-            // holds an open palm so the gesture is discoverable AND the
+            // hierarchy so it doesn't get one (closed-fist there is a
+            // no-op in the gesture mapper anyway). Ring fills 0→1 as the
+            // user holds a fist so the gesture is discoverable AND the
             // user gets live confirmation it's being recognized.
             if (tier != InteractionTier.AMBIENT_HUD) {
                 CollapseAffordance(
-                    progress = openPalmProgress,
+                    progress = closedFistProgress,
                     label = when (tier) {
-                        InteractionTier.NOTIFICATION_CARDS -> "Open palm to dismiss"
-                        InteractionTier.INBOX -> "Open palm to back out"
-                        InteractionTier.FOCUS -> "Open palm to back out"
-                        else -> "Open palm to collapse"
+                        InteractionTier.NOTIFICATION_CARDS -> "Close fist to dismiss"
+                        InteractionTier.INBOX -> "Close fist to back out"
+                        InteractionTier.FOCUS -> "Close fist to back out"
+                        else -> "Close fist to collapse"
                     },
                 )
             }
@@ -610,7 +610,7 @@ private fun FallbackTierContent(
     localRecognizerState: LocalCommandRecognizer.State,
     voiceComposeState: VoiceComposeManager.ComposeState,
     voiceDraft: VoiceDraft?,
-    openPalmProgress: Float,
+    closedFistProgress: Float,
     onExpandToNotifications: () -> Unit,
     onCollapseFromNotifications: () -> Unit,
     onExpandToInbox: () -> Unit,
@@ -661,7 +661,7 @@ private fun FallbackTierContent(
                 localRecognizerState = localRecognizerState,
                 voiceComposeState = voiceComposeState,
                 voiceDraft = voiceDraft,
-                openPalmProgress = openPalmProgress,
+                closedFistProgress = closedFistProgress,
                 onExpandToNotifications = onExpandToNotifications,
                 onCollapseFromNotifications = onCollapseFromNotifications,
                 onExpandToInbox = onExpandToInbox,

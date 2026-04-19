@@ -13,7 +13,7 @@ private const val TAG = "GestureMapper"
  * Tier escalation model (designed for walking/on-the-go use):
  *
  *   GLOBAL:
- *     OPEN_PALM_HOLD_COLLAPSE = back-up one tier (the only collapse gesture).
+ *     CLOSED_FIST_HOLD_COLLAPSE = back-up one tier (the only collapse gesture).
  *
  *   AMBIENT_HUD:
  *     PINCH_HOLD_EXPAND  -> NOTIFICATION_CARDS
@@ -48,11 +48,11 @@ class GestureToActionMapper(
 
     fun onGesture(gesture: SecondaryHandGestures.Gesture, tier: InteractionTier) {
         Log.d(TAG, "gesture=$gesture tier=$tier")
-        // OPEN_PALM_HOLD_COLLAPSE is the universal "go back" — it's the
+        // CLOSED_FIST_HOLD_COLLAPSE is the universal "go back" — it's the
         // gestural inverse of PINCH_HOLD_EXPAND and behaves the same way
         // regardless of which tier we're in. Handling it here means we
         // don't have to repeat the same case in every per-tier when().
-        if (gesture == SecondaryHandGestures.Gesture.OPEN_PALM_HOLD_COLLAPSE) {
+        if (gesture == SecondaryHandGestures.Gesture.CLOSED_FIST_HOLD_COLLAPSE) {
             collapseOneTier(tier)
             return
         }
@@ -67,11 +67,11 @@ class GestureToActionMapper(
     private fun collapseOneTier(tier: InteractionTier) {
         when (tier) {
             InteractionTier.FOCUS -> {
-                Log.d(TAG, "  -> collapseToInbox() (open-palm)")
+                Log.d(TAG, "  -> collapseToInbox() (closed-fist)")
                 viewModel.collapseToInbox()
             }
             InteractionTier.INBOX -> {
-                Log.d(TAG, "  -> collapseToHud() (open-palm, skipping cards)")
+                Log.d(TAG, "  -> collapseToHud() (closed-fist, skipping cards)")
                 // From the user's perspective INBOX collapses straight back
                 // to the ambient banner, not to the cards (which are a
                 // peripheral preview, not a deeper state). Mirrors what
@@ -79,11 +79,11 @@ class GestureToActionMapper(
                 viewModel.collapseToHud()
             }
             InteractionTier.NOTIFICATION_CARDS -> {
-                Log.d(TAG, "  -> collapseFromNotificationCards() (open-palm)")
+                Log.d(TAG, "  -> collapseFromNotificationCards() (closed-fist)")
                 viewModel.collapseFromNotificationCards()
             }
             InteractionTier.AMBIENT_HUD -> {
-                Log.d(TAG, "  open-palm in AMBIENT_HUD: nothing to collapse")
+                Log.d(TAG, "  closed-fist in AMBIENT_HUD: nothing to collapse")
             }
         }
     }
@@ -170,10 +170,9 @@ class GestureToActionMapper(
                     viewModel.toggleStar(email)
                 }
             }
-            // OPEN_PALM_HOLD_COLLAPSE handled centrally in [onGesture]; this
-            // case exists only to keep the when exhaustive after the new
-            // enum value was added.
-            SecondaryHandGestures.Gesture.OPEN_PALM_HOLD_COLLAPSE -> Unit
+            // CLOSED_FIST_HOLD_COLLAPSE handled centrally in [onGesture];
+            // this case exists only to keep the when exhaustive.
+            SecondaryHandGestures.Gesture.CLOSED_FIST_HOLD_COLLAPSE -> Unit
         }
     }
 
@@ -213,8 +212,8 @@ class GestureToActionMapper(
                     viewModel.toggleStar(it)
                 }
             }
-            // OPEN_PALM_HOLD_COLLAPSE handled centrally in [onGesture].
-            SecondaryHandGestures.Gesture.OPEN_PALM_HOLD_COLLAPSE -> Unit
+            // CLOSED_FIST_HOLD_COLLAPSE handled centrally in [onGesture].
+            SecondaryHandGestures.Gesture.CLOSED_FIST_HOLD_COLLAPSE -> Unit
         }
     }
 
@@ -228,10 +227,10 @@ class GestureToActionMapper(
             // to INBOX, which inverted the verb (`HOLD_EXPAND` doing a
             // collapse) and was the most-reported "random collapse" — a
             // small drift in the secondary hand during reading would yank
-            // the user back to the inbox list. Open-palm-hold is the one
-            // and only collapse gesture now; pinch never collapses.
+            // the user back to the inbox list. Closed-fist-hold is the
+            // one and only collapse gesture now; pinch never collapses.
             SecondaryHandGestures.Gesture.PINCH_HOLD_EXPAND -> {
-                Log.v(TAG, "  PINCH_HOLD_EXPAND in FOCUS: ignored (open-palm-hold collapses)")
+                Log.v(TAG, "  PINCH_HOLD_EXPAND in FOCUS: ignored (closed-fist-hold collapses)")
             }
             SecondaryHandGestures.Gesture.PINCH_SELECT -> {
                 /* standard select — handled by existing panel tap */

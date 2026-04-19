@@ -80,7 +80,7 @@ class KeyboardGestureDispatcher(
                 handGestures.simulateGesture(SecondaryHandGestures.Gesture.PINCH_HOLD_EXPAND); true
             }
             KeyEvent.KEYCODE_P -> {
-                handGestures.simulateGesture(SecondaryHandGestures.Gesture.OPEN_PALM_HOLD_COLLAPSE); true
+                handGestures.simulateGesture(SecondaryHandGestures.Gesture.CLOSED_FIST_HOLD_COLLAPSE); true
             }
             KeyEvent.KEYCODE_N -> {
                 selectNextEmail(); true

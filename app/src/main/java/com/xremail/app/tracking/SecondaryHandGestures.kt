@@ -52,41 +52,44 @@ private const val DEDUP_WINDOW_MS = 250L
 // Per-gesture dedup overrides for gestures whose natural re-fire interval
 // (hold-duration + finger-recovery) is longer than DEDUP_WINDOW_MS but
 // where firing twice in quick succession would be catastrophic.
-// OPEN_PALM_HOLD_COLLAPSE collapses one tier per fire — two fires in a
+// CLOSED_FIST_HOLD_COLLAPSE collapses one tier per fire — two fires in a
 // row jump the user from FOCUS straight to AMBIENT_HUD, which the user
 // reported as "the collapse is super glitchy". 1500 ms covers the
-// hold-duration (700 ms) + the typical hand-recovery delay where a brief
+// hold-duration (600 ms) + the typical hand-recovery delay where a brief
 // tracking blip would otherwise let the timer restart and re-fire.
-private const val OPEN_PALM_DEDUP_WINDOW_MS = 1_500L
+private const val CLOSED_FIST_DEDUP_WINDOW_MS = 1_500L
 
-// Open-palm collapse — minimum distance from each fingertip to the palm
-// joint that we consider "extended". Hands at rest curl ~3-4cm; deliberate
-// "stop / go back" palm extends to ~7-9cm. Tuned so a relaxed hand at the
-// user's side doesn't constantly fire OPEN_PALM_HOLD on the secondary hand.
-// Required finger extension for the open-palm "stop" gesture. Bumped from
-// 6cm to 8cm so a relaxed hand at rest (fingers naturally splayed when
-// arm is at user's side) doesn't satisfy the threshold.
-private const val OPEN_PALM_FINGER_EXTEND_MIN_M = 0.08f
-// Hold duration for collapse. The user wants tier transitions to feel
-// snappy ("very quickly and responsively"). 1000ms felt deliberate but
-// sluggish — by the time the collapse fired the user had already started
-// looking at what they wanted to see. 600ms is fast but still well past
-// the noise floor: a stray open palm during a wave or pointing gesture
-// is rarely held that long, and the OPEN_PALM_FINGER_EXTEND_MIN_M filter
-// (8cm extension) plus the always-visible CollapseAffordance ring make
-// accidental fires obvious enough to release before they trigger.
-private const val OPEN_PALM_HOLD_DURATION_MS = 600L
-// Once OPEN_PALM_HOLD fires we lock it out until the user fully closes the
-// hand again — without this, holding the palm extended for 2s fires once
-// then re-fires at every dedup-window boundary as the timer keeps ticking.
-private const val OPEN_PALM_RELEASE_FINGER_FOLDED_M = 0.04f
+// Closed-fist collapse — maximum distance from each fingertip to the palm
+// joint that we consider "folded". A relaxed hand at the user's side
+// curls ~3-4cm; a deliberate fist tucks all four non-thumb fingertips
+// in tight, ~1.5-2.5cm from the palm joint. We require <= 2.5cm so a
+// resting hand (which often hovers right around 3cm) doesn't false-fire
+// — the user has to actually clench. Combined with the thumb-folded
+// requirement below, this is essentially impossible to satisfy except
+// with intentional fist clenching.
+private const val CLOSED_FIST_FINGER_FOLD_MAX_M = 0.025f
+// In a real fist the thumb wraps OVER the curled fingers, so the
+// thumb-tip ends up close to the palm too (~3-4cm). A relaxed hand has
+// the thumb extended off to the side at 5-7cm. We require the thumb to
+// also be tucked so an open hand resting at the side (loose fingers but
+// thumb still extended) can't ever satisfy the gesture.
+private const val CLOSED_FIST_THUMB_FOLD_MAX_M = 0.045f
+// Hold duration. Same target as the old open-palm-hold (600ms) — fast
+// enough to feel snappy, slow enough that incidental momentary fist-like
+// poses (gripping a coffee, holding a phone) don't sustain past it.
+private const val CLOSED_FIST_HOLD_DURATION_MS = 600L
+// Once CLOSED_FIST_HOLD fires we lock it out until the user opens the
+// hand again — without this, holding a fist for 2s fires once then
+// re-fires every dedup window as the timer keeps ticking. Lock releases
+// the moment ANY non-thumb fingertip extends past this threshold.
+private const val CLOSED_FIST_RELEASE_FINGER_EXTEND_M = 0.06f
 // Tracking-loss blips of <= this duration are treated as a continuation
-// of the previous gesture (we don't reset openPalmEmitted on loss). On
-// Galaxy XR a deliberate "stop hand" held in front of the face often
-// causes 1-3 frame tracking dropouts as the palm occludes the camera
-// arrays — without this grace period, every dropout restarts the
-// open-palm timer and 700 ms later we re-fire the collapse, which the
-// user observed as "collapses past the tier I wanted to land on".
+// of the previous gesture (we don't reset closedFistEmitted on loss). On
+// Galaxy XR a held gesture in front of the face often causes 1-3 frame
+// tracking dropouts as the hand occludes the camera arrays — without
+// this grace period, every dropout restarts the timer and we re-fire
+// the collapse, which the user observed as "collapses past the tier I
+// wanted to land on".
 private const val TRACKING_LOSS_GRACE_MS = 600L
 
 /**
@@ -111,12 +114,20 @@ class SecondaryHandGestures {
         PINCH_SELECT,
         PINCH_HOLD_EXPAND,
         /**
-         * Open-palm hold (all five fingers extended for ~700ms). The natural
-         * inverse of [PINCH_HOLD_EXPAND] — pinch-and-hold pushes deeper into
-         * the tier hierarchy, palm-and-hold pulls one tier back. Mapped per
-         * tier in [com.xremail.app.tracking.GestureToActionMapper].
+         * Closed-fist hold — all four non-thumb fingertips folded tight to
+         * the palm AND the thumb tucked over them, held for ~600ms.
+         * The intentional inverse of [PINCH_HOLD_EXPAND]: pinch-and-hold
+         * pushes deeper into the tier hierarchy, fist-and-hold pulls one
+         * tier back. Mapped per tier in
+         * [com.xremail.app.tracking.GestureToActionMapper].
+         *
+         * Replaced the previous OPEN_PALM_HOLD_COLLAPSE because an open
+         * palm is an extremely common incidental pose (waving, gesturing
+         * while talking, picking something up) and fired false collapses
+         * far more often than it fired intentional ones. A clenched fist
+         * with the thumb tucked is essentially never produced by accident.
          */
-        OPEN_PALM_HOLD_COLLAPSE,
+        CLOSED_FIST_HOLD_COLLAPSE,
         SWIPE_LEFT_ARCHIVE,
         SWIPE_RIGHT_SNOOZE,
         SWIPE_DOWN_DISMISS,
@@ -136,14 +147,14 @@ class SecondaryHandGestures {
     val lastInteractionMs: StateFlow<Long> = _lastInteractionMs.asStateFlow()
 
     /**
-     * Live progress of the open-palm "collapse" hold, 0f → 1f.
-     * 0f when the user is not holding an open palm, ramps up while held,
-     * snaps to 1f at the moment OPEN_PALM_HOLD_COLLAPSE fires, then drops
+     * Live progress of the closed-fist "collapse" hold, 0f → 1f.
+     * 0f when the user is not holding a fist, ramps up while held, snaps
+     * to 1f at the moment CLOSED_FIST_HOLD_COLLAPSE fires, then drops
      * back to 0f. Drives the peripheral panel's visible collapse-affordance
      * ring so the user can SEE the gesture being recognized in real time.
      */
-    private val _openPalmProgress = MutableStateFlow(0f)
-    val openPalmProgress: StateFlow<Float> = _openPalmProgress.asStateFlow()
+    private val _closedFistProgress = MutableStateFlow(0f)
+    val closedFistProgress: StateFlow<Float> = _closedFistProgress.asStateFlow()
 
     private var trackingJobs: List<Job> = emptyList()
     private val handStates = mutableMapOf<String, HandState>()
@@ -233,7 +244,7 @@ class SecondaryHandGestures {
         trackingJobs = emptyList()
         handStates.values.forEach { it.reset() }
         handStates.clear()
-        _openPalmProgress.value = 0f
+        _closedFistProgress.value = 0f
     }
 
     /**
@@ -257,11 +268,12 @@ class SecondaryHandGestures {
                 s.wasTracking = false
                 s.trackingLostAtMs = now
                 // INTENTIONALLY do NOT call s.reset() here. Brief tracking
-                // dropouts (1-3 frames, common when an open palm occludes
-                // the headset cameras) used to clear `openPalmEmitted` and
-                // `pinchEmitted`, which let a sustained gesture re-fire a
-                // hold the moment tracking recovered. The actual reset
-                // happens below if the gap exceeds TRACKING_LOSS_GRACE_MS.
+                // dropouts (1-3 frames, common when a clenched fist or
+                // pinched fingers self-occlude the camera arrays) used to
+                // clear `closedFistEmitted` and `pinchEmitted`, which let
+                // a sustained gesture re-fire a hold the moment tracking
+                // recovered. The actual reset happens below if the gap
+                // exceeds TRACKING_LOSS_GRACE_MS.
             }
             return
         }
@@ -292,11 +304,11 @@ class SecondaryHandGestures {
         val pinchDistance = Vector3.distance(thumbTip.translation, indexTip.translation)
 
         detectPinch(pinchDistance, now, s)
-        // Open-palm detection runs in parallel with pinch so a held pinch
-        // can't accidentally satisfy "all fingers extended" — we explicitly
-        // require the thumb-index distance to be wide too inside the helper.
-        detectOpenPalmHold(
-            pinchDistance = pinchDistance,
+        // Closed-fist detection runs in parallel with pinch. A held pinch
+        // satisfies "thumb close to index" but NOT "all four fingers
+        // tucked AND thumb tucked", so the two gestures can't collide.
+        detectClosedFistHold(
+            thumbTipDistFromPalm = Vector3.distance(thumbTip.translation, palm.translation),
             indexTipDistFromPalm = Vector3.distance(indexTip.translation, palm.translation),
             middleTipDistFromPalm = Vector3.distance(middleTip.translation, palm.translation),
             ringTipDistFromPalm = Vector3.distance(ringTip.translation, palm.translation),
@@ -342,18 +354,22 @@ class SecondaryHandGestures {
     }
 
     /**
-     * Open-palm hold (collapse) detector. Fires [Gesture.OPEN_PALM_HOLD_COLLAPSE]
-     * when the user holds an open hand — all four non-thumb fingertips
-     * stretched away from the palm center, AND the thumb-index distance well
-     * past pinch threshold — for at least [OPEN_PALM_HOLD_DURATION_MS].
+     * Closed-fist hold (collapse) detector. Fires
+     * [Gesture.CLOSED_FIST_HOLD_COLLAPSE] when the user clenches a fist —
+     * all four non-thumb fingertips folded tight to the palm AND the
+     * thumb tucked over them — for at least [CLOSED_FIST_HOLD_DURATION_MS].
      *
-     * Once it fires we lock out re-fires until the hand closes back down so
-     * a sustained "stop" hand doesn't spam collapse events. Lock releases
-     * the moment any non-thumb fingertip folds inside
-     * [OPEN_PALM_RELEASE_FINGER_FOLDED_M].
+     * Once it fires we lock out re-fires until the hand opens back up so
+     * a sustained fist doesn't spam collapse events. The lock releases
+     * the moment any non-thumb fingertip extends past
+     * [CLOSED_FIST_RELEASE_FINGER_EXTEND_M].
+     *
+     * Replaced detectOpenPalmHold per user feedback: open palms are an
+     * extremely common incidental pose, fists are essentially never made
+     * accidentally.
      */
-    private fun detectOpenPalmHold(
-        pinchDistance: Float,
+    private fun detectClosedFistHold(
+        thumbTipDistFromPalm: Float,
         indexTipDistFromPalm: Float,
         middleTipDistFromPalm: Float,
         ringTipDistFromPalm: Float,
@@ -361,60 +377,64 @@ class SecondaryHandGestures {
         now: Long,
         s: HandState,
     ) {
-        // "Open" = thumb is also clearly NOT pinching the index. Otherwise
-        // a deliberate pinch with a slightly-curled middle/ring finger could
-        // satisfy the "all fingers extended" condition and double-fire.
-        val thumbOpen = pinchDistance > PINCH_DISTANCE_THRESHOLD * 2f
-        val allFingersExtended =
-            indexTipDistFromPalm > OPEN_PALM_FINGER_EXTEND_MIN_M &&
-                middleTipDistFromPalm > OPEN_PALM_FINGER_EXTEND_MIN_M &&
-                ringTipDistFromPalm > OPEN_PALM_FINGER_EXTEND_MIN_M &&
-                littleTipDistFromPalm > OPEN_PALM_FINGER_EXTEND_MIN_M
-        val openNow = thumbOpen && allFingersExtended
+        val allFingersFolded =
+            indexTipDistFromPalm < CLOSED_FIST_FINGER_FOLD_MAX_M &&
+                middleTipDistFromPalm < CLOSED_FIST_FINGER_FOLD_MAX_M &&
+                ringTipDistFromPalm < CLOSED_FIST_FINGER_FOLD_MAX_M &&
+                littleTipDistFromPalm < CLOSED_FIST_FINGER_FOLD_MAX_M
+        // Thumb-tucked check separates a real fist (thumb wraps over the
+        // curled fingers, ending up close to the palm) from a relaxed
+        // hand (thumb extended off to the side). A relaxed hand can have
+        // loosely-curled fingers but the thumb is almost always >5cm
+        // from the palm, so this gate alone kills most false positives.
+        val thumbTucked = thumbTipDistFromPalm < CLOSED_FIST_THUMB_FOLD_MAX_M
+        val fistNow = allFingersFolded && thumbTucked
 
-        // Release the lockout the moment the hand closes (any non-thumb
-        // finger folded back). Required so a second deliberate "stop" hand
-        // is allowed to fire after the first has been acknowledged.
-        if (s.openPalmEmitted) {
-            val anyFingerFolded =
-                indexTipDistFromPalm < OPEN_PALM_RELEASE_FINGER_FOLDED_M ||
-                    middleTipDistFromPalm < OPEN_PALM_RELEASE_FINGER_FOLDED_M ||
-                    ringTipDistFromPalm < OPEN_PALM_RELEASE_FINGER_FOLDED_M ||
-                    littleTipDistFromPalm < OPEN_PALM_RELEASE_FINGER_FOLDED_M
-            if (anyFingerFolded) {
-                s.openPalmEmitted = false
-                s.openPalmStartTimeMs = 0L
-                XrLog.v(TAG, "${s.label} open-palm lockout released (hand closed)")
+        // Release the lockout the moment the hand opens (any non-thumb
+        // finger extends past the release threshold). Required so a
+        // second deliberate fist is allowed to fire after the first has
+        // been acknowledged.
+        if (s.closedFistEmitted) {
+            val anyFingerExtended =
+                indexTipDistFromPalm > CLOSED_FIST_RELEASE_FINGER_EXTEND_M ||
+                    middleTipDistFromPalm > CLOSED_FIST_RELEASE_FINGER_EXTEND_M ||
+                    ringTipDistFromPalm > CLOSED_FIST_RELEASE_FINGER_EXTEND_M ||
+                    littleTipDistFromPalm > CLOSED_FIST_RELEASE_FINGER_EXTEND_M
+            if (anyFingerExtended) {
+                s.closedFistEmitted = false
+                s.closedFistStartTimeMs = 0L
+                XrLog.v(TAG, "${s.label} closed-fist lockout released (hand opened)")
             }
         }
 
-        if (openNow && !s.wasOpenPalm) {
-            s.openPalmStartTimeMs = now
-            XrLog.v(TAG, "${s.label} open-palm START " +
-                "(idx=${"%.3f".format(indexTipDistFromPalm)}m " +
+        if (fistNow && !s.wasClosedFist) {
+            s.closedFistStartTimeMs = now
+            XrLog.v(TAG, "${s.label} closed-fist START " +
+                "(thm=${"%.3f".format(thumbTipDistFromPalm)}m " +
+                "idx=${"%.3f".format(indexTipDistFromPalm)}m " +
                 "mid=${"%.3f".format(middleTipDistFromPalm)}m " +
                 "ring=${"%.3f".format(ringTipDistFromPalm)}m " +
                 "lit=${"%.3f".format(littleTipDistFromPalm)}m)")
         }
 
-        if (openNow && !s.openPalmEmitted) {
-            val held = now - s.openPalmStartTimeMs
-            val progress = (held.toFloat() / OPEN_PALM_HOLD_DURATION_MS).coerceIn(0f, 1f)
-            _openPalmProgress.value = progress
-            if (held >= OPEN_PALM_HOLD_DURATION_MS) {
-                XrLog.d(TAG, "${s.label} open-palm HOLD ${held}ms -> OPEN_PALM_HOLD_COLLAPSE")
-                _openPalmProgress.value = 1f
-                emit(Gesture.OPEN_PALM_HOLD_COLLAPSE, s)
-                s.openPalmEmitted = true
+        if (fistNow && !s.closedFistEmitted) {
+            val held = now - s.closedFistStartTimeMs
+            val progress = (held.toFloat() / CLOSED_FIST_HOLD_DURATION_MS).coerceIn(0f, 1f)
+            _closedFistProgress.value = progress
+            if (held >= CLOSED_FIST_HOLD_DURATION_MS) {
+                XrLog.d(TAG, "${s.label} closed-fist HOLD ${held}ms -> CLOSED_FIST_HOLD_COLLAPSE")
+                _closedFistProgress.value = 1f
+                emit(Gesture.CLOSED_FIST_HOLD_COLLAPSE, s)
+                s.closedFistEmitted = true
             }
-        } else if (!openNow && _openPalmProgress.value != 0f) {
-            // User released the palm before the threshold (or after the
+        } else if (!fistNow && _closedFistProgress.value != 0f) {
+            // User released the fist before the threshold (or after the
             // gesture fired) — reset the progress meter so the UI ring
             // empties out cleanly.
-            _openPalmProgress.value = 0f
+            _closedFistProgress.value = 0f
         }
 
-        s.wasOpenPalm = openNow
+        s.wasClosedFist = fistNow
     }
 
     private fun trackPalmForSwipe(palmPos: Vector3, now: Long, s: HandState) {
@@ -465,7 +485,7 @@ class SecondaryHandGestures {
         // double-fire produces a user-visible regression (skipping past
         // the tier the user wanted to land on).
         val dedupWindow = when (gesture) {
-            Gesture.OPEN_PALM_HOLD_COLLAPSE -> OPEN_PALM_DEDUP_WINDOW_MS
+            Gesture.CLOSED_FIST_HOLD_COLLAPSE -> CLOSED_FIST_DEDUP_WINDOW_MS
             else -> DEDUP_WINDOW_MS
         }
         if (lastEmitType == gesture && now - lastEmitMs < dedupWindow) {
@@ -502,18 +522,18 @@ class SecondaryHandGestures {
         var isPinching = false
         var pinchStartTimeMs = 0L
         var pinchEmitted = false
-        var wasOpenPalm = false
-        var openPalmStartTimeMs = 0L
-        var openPalmEmitted = false
+        var wasClosedFist = false
+        var closedFistStartTimeMs = 0L
+        var closedFistEmitted = false
         val palmPositionHistory = mutableListOf<Pair<Long, Vector3>>()
 
         fun reset() {
             isPinching = false
             pinchStartTimeMs = 0L
             pinchEmitted = false
-            wasOpenPalm = false
-            openPalmStartTimeMs = 0L
-            openPalmEmitted = false
+            wasClosedFist = false
+            closedFistStartTimeMs = 0L
+            closedFistEmitted = false
             palmPositionHistory.clear()
         }
     }
