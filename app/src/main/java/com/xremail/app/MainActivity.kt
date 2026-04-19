@@ -27,8 +27,12 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.xr.compose.platform.LocalSession
+import androidx.xr.runtime.DeviceTrackingMode
+import androidx.xr.runtime.SessionConfigureSuccess
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import com.xremail.app.backend.service.AuthRepository
 import com.xremail.app.backend.service.NetworkClient
 import com.xremail.app.backend.service.TokenManager
@@ -40,6 +44,7 @@ import com.xremail.app.tracking.KeyboardGestureDispatcher
 import com.xremail.app.tracking.SecondaryHandGestures
 import com.xremail.app.tracking.TiltScrollController
 import com.xremail.app.tracking.XrSessionManager
+import com.xremail.app.util.XrLog
 import com.xremail.app.ui.spatial.DisplayMode
 import com.xremail.app.ui.spatial.DisplayModeRouter
 import com.xremail.app.ui.feedback.GestureFeedbackOverlay
@@ -52,6 +57,7 @@ import com.xremail.app.voice.GeminiLiveManager
 import com.xremail.app.voice.TTSManager
 import com.xremail.app.voice.VoiceCommandDispatcher
 import com.xremail.app.voice.VoiceComposeManager
+import com.xremail.app.voice.LocalCommandRecognizer
 
 class MainActivity : ComponentActivity() {
 
@@ -81,6 +87,30 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        // Wrap the platform default uncaught-exception handler so any process
+        // death gets a structured XrLog entry tagged with the thread that
+        // threw — Android's default crash dump goes to the system "crash"
+        // logcat buffer which is sometimes wiped between sessions on Galaxy
+        // XR. Mirroring it into our normal log makes "the app crashed when I
+        // tapped X" reproducible after the fact (`adb logcat -d | grep
+        // XrMail/Crash`). We chain to the platform handler so the OS still
+        // shows the crash dialog and writes a tombstone.
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, err ->
+            try {
+                XrLog.e(
+                    "Crash",
+                    "UNCAUGHT on thread=${thread.name} (id=${thread.id}) — " +
+                        "msg=${err.message}",
+                    err,
+                )
+            } catch (_: Throwable) {
+                // Logging itself failed — we're already crashing, swallow so
+                // we still hand off to the system handler below.
+            }
+            previous?.uncaughtException(thread, err)
+        }
 
         tokenManager = TokenManager(applicationContext)
 
@@ -172,13 +202,25 @@ private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
 
     // Runtime permissions — mic for Gemini Live, XR sensors for session.configure.
     // Missing XR perms crash OpenXrManager.configure with SecurityException.
+    // Galaxy XR (alpha12) doesn't ship `android.permission.SCENE_UNDERSTANDING`
+    // — only the suffixed `_COARSE` / `_FINE` variants. Listing the bare name
+    // here used to permanently pin `allGranted()` to false because
+    // checkSelfPermission() can't resolve a permission the platform has never
+    // heard of. That broke FollowingSubspace silently — the head-lock branch
+    // in InteractionTierRouter never engaged and the AMBIENT_HUD fell back to
+    // a world-anchored Subspace, which is what the user saw as "headlock isn't
+    // following when I turn around".
+    //
+    // We don't list HEAD_TRACKING here either: the alpha12 DeviceTrackingMode
+    // enum exposes only DISABLED and LAST_KNOWN, and LAST_KNOWN doesn't
+    // require the dangerous HEAD_TRACKING permission. Adding it would force a
+    // second prompt that the user could deny without functional consequence.
     val requiredPerms = remember {
         arrayOf(
             Manifest.permission.RECORD_AUDIO,
             "android.permission.HAND_TRACKING",
             "android.permission.FACE_TRACKING",
             "android.permission.EYE_TRACKING_COARSE",
-            "android.permission.SCENE_UNDERSTANDING",
         )
     }
     fun allGranted(): Boolean = requiredPerms.all {
@@ -205,7 +247,13 @@ private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
         if (!allGranted()) permissionLauncher.launch(requiredPerms)
     }
 
-    // Connect / disconnect Gemini Live once the mic permission is settled.
+    // Connect Gemini Live once the mic permission is settled — but DON'T
+    // open the mic. The WebSocket warms up so the wake-word path can flip
+    // straight from CONNECTED -> LISTENING in <100ms. Without this split
+    // we used to stream the user's mic to the cloud as soon as the app
+    // opened, and the model would respond to background conversation /
+    // ambient noise — exactly the "always on, working really weirdly"
+    // behaviour the user reported.
     LaunchedEffect(micGranted) {
         if (micGranted) {
             geminiLive.setContextProvider { voiceDispatcher.currentContextSummary() }
@@ -216,32 +264,152 @@ private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
         onDispose { geminiLive.disconnect() }
     }
 
-    // Route function calls the model emits into the ViewModel.
-    LaunchedEffect(geminiLive, voiceDispatcher) {
-        geminiLive.commands.collect { voiceDispatcher.dispatch(it) }
+    // ---------------------------------------------------------------------------
+    // Local-first voice path — replaces the old wake-word + always-on Gemini
+    // Live flow that the user described as "tons of delay, not conversational".
+    //
+    // Architecture:
+    //   1. LocalCommandRecognizer runs continuously on-device (Android
+    //      SpeechRecognizer, on-device variant when available). It captures
+    //      the WHOLE utterance — wake phrase + command — in a single round.
+    //   2. CommandGrammar parses the transcript:
+    //        - "hey gemini archive this"   -> Command.ArchiveEmail (instant)
+    //        - "hey gemini draft a reply"  -> Escalate("draft a reply")
+    //                                          → summon Gemini Live + send text
+    //        - "open the door"             -> NotAddressed (no wake) → ignored
+    //   3. Matched commands fire DIRECTLY into VoiceCommandDispatcher with
+    //      ZERO cloud round-trip (~300-500 ms total: ASR partial + dispatch).
+    //   4. Only escalations open Gemini Live's mic / WebSocket — so the
+    //      "always-on" model behaviour the user disliked is gone.
+    //
+    // Why we kept Gemini Live around at all:
+    //   The grammar is good for the obvious commands (archive/snooze/next/
+    //   open/close/summarize/refresh/reply/send/search/filter), but it can't
+    //   handle "draft a reply saying I'm running late" or "what's the most
+    //   urgent thing in my inbox". Those still need a model. The Escalate
+    //   path forwards the post-wake remainder to Gemini as a text turn so
+    //   the user doesn't have to repeat themselves after the SDK warms the
+    //   mic — which was the OTHER big latency source ("hey gemini" → SDK
+    //   spin-up → user re-says command).
+    val localCommands = remember(geminiLive, voiceDispatcher) {
+        LocalCommandRecognizer(
+            context = context,
+            onLocalCommand = { command ->
+                XrLog.i("Voice", "local-dispatch: $command (no cloud round-trip)")
+                voiceDispatcher.dispatch(command)
+            },
+            onEscalateToGemini = { remainder ->
+                XrLog.i("Voice", "escalate-to-gemini: \"$remainder\"")
+                geminiLive.summon()
+                if (remainder.isNotBlank()) {
+                    // Forward the user's intent as a TEXT turn so Gemini
+                    // doesn't have to re-listen from a cold mic. Saves
+                    // 1-2s of perceived latency vs the old flow.
+                    scope.launch {
+                        try {
+                            geminiLive.sendContextUpdate(remainder)
+                        } catch (t: Throwable) {
+                            XrLog.w("Voice", "forward-to-gemini failed: ${t.message}")
+                        }
+                    }
+                }
+            },
+        )
+    }
+    LaunchedEffect(micGranted) {
+        if (micGranted) localCommands.start()
+    }
+    DisposableEffect(localCommands) {
+        onDispose { localCommands.stop() }
     }
 
-    // Speak the AI summary whenever the selected email changes — the core
-    // "can I hear it?" demo path. Keeps Gemini Live as the conversational layer
-    // and uses on-device TTS for deterministic narration.
+    // Coordinate the recognizer with Gemini's mic ownership. SAME contract
+    // as the old wake-word coordinator: pause us while Gemini holds the
+    // mic (Android won't share the AudioRecord), resume us when Gemini
+    // dismisses. Without this, every recognizer round returns
+    // ERROR_RECOGNIZER_BUSY and the local command path silently dies
+    // after the first Gemini conversation.
+    LaunchedEffect(geminiLive, localCommands) {
+        geminiLive.state
+            .map { it == GeminiLiveManager.SessionState.LISTENING }
+            .distinctUntilChanged()
+            .collect { isListening ->
+                if (isListening) {
+                    localCommands.pause()
+                } else if (micGranted) {
+                    localCommands.resume()
+                }
+            }
+    }
+
+    // Idle-dismiss: after IDLE_TIMEOUT_MS of no model activity (no
+    // function calls, no manual summon), close the mic so the user has
+    // to wake Gemini again. Keeps the sense that Gemini is "asleep
+    // unless addressed", and stops the perception that the model is
+    // randomly responding to passing conversation.
+    LaunchedEffect(geminiLive) {
+        geminiLive.lastActivityMs.collect { lastActivity ->
+            if (lastActivity == 0L) return@collect
+            if (geminiLive.state.value != GeminiLiveManager.SessionState.LISTENING) return@collect
+            scope.launch {
+                delay(IDLE_TIMEOUT_MS)
+                val sinceLast = System.currentTimeMillis() - geminiLive.lastActivityMs.value
+                val stillListening = geminiLive.state.value ==
+                    GeminiLiveManager.SessionState.LISTENING
+                if (stillListening && sinceLast >= IDLE_TIMEOUT_MS) {
+                    XrLog.i("Wake", "idle-dismiss: ${sinceLast}ms since last activity")
+                    geminiLive.dismiss()
+                }
+            }
+        }
+    }
+
+    // Route function calls the model emits into the ViewModel. After each
+    // dispatch we wait briefly and then mark the model idle so the auto-TTS
+    // summary path can re-engage. The grace window covers the model's short
+    // verbal confirmation that follows most function calls — without it, a
+    // selection-via-voice would fire local TTS on top of the model's "Done."
+    LaunchedEffect(geminiLive, voiceDispatcher) {
+        geminiLive.commands.collect { command ->
+            voiceDispatcher.dispatch(command)
+            geminiLive.bumpActivity()
+            scope.launch {
+                delay(MODEL_TURN_GRACE_MS)
+                geminiLive.markModelIdle()
+            }
+        }
+    }
+
+    // Speak the AI summary whenever the selected email changes — but ONLY
+    // when Gemini Live isn't actively speaking. Without this guard the user
+    // hears the local TTS narrator and Gemini's voice talking over each
+    // other, which feels like a 1-2 second delay even when both responses
+    // arrive instantly. The guard is "if the model is mid-turn, the model
+    // owns the audio output; let the user ask 'summarize this' if they
+    // also want the local narration."
     LaunchedEffect(Unit) {
         viewModel.uiState
             .map { it.selectedEmail?.id to it.selectedEmail?.aiSummary }
             .distinctUntilChanged()
             .collect { (_, summary) ->
-                if (!summary.isNullOrBlank()) ttsManager.speak(summary)
+                if (summary.isNullOrBlank()) return@collect
+                if (geminiLive.modelSpeaking.value) {
+                    XrLog.v("VoiceTTS", "auto-summary suppressed: Gemini Live is speaking")
+                    return@collect
+                }
+                ttsManager.speak(summary)
             }
     }
 
-    // Keep the model grounded in what the user is looking at.
-    LaunchedEffect(Unit) {
-        viewModel.uiState
-            .map { it.selectedEmail?.id }
-            .distinctUntilChanged()
-            .collect {
-                geminiLive.sendContextUpdate(voiceDispatcher.currentContextSummary())
-            }
-    }
+    // NOTE: we used to fire `geminiLive.sendContextUpdate(...)` on every
+    // selection change. That counted as a user-role turn and frequently
+    // provoked the model to emit a spurious "Got it." or "Okay." reply,
+    // which (a) talked over the user's next sentence and (b) burned ~500ms
+    // of round-trip on every selection. The model already has access to the
+    // current selection through the `setContextProvider` callback that runs
+    // at the start of each REAL user turn, so we don't need to push it
+    // proactively. Reintroduce a targeted push only if the model starts
+    // hallucinating about what's on screen.
 
     DisposableEffect(ttsManager) {
         onDispose { ttsManager.shutdown() }
@@ -268,6 +436,42 @@ private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
 
     val xrSession = LocalSession.current
 
+    // CRITICAL: configure DeviceTrackingMode SYNCHRONOUSLY here, *before* the
+    // child composition gets to call `FollowTarget.ArDevice(xrSession)`.
+    //
+    // Galaxy XR ships its default `Config.deviceTracking = DISABLED`. The
+    // FollowingSubspace API's `FollowTarget.ArDevice(session)` constructor
+    // calls `ArDevice.getInstance(session)` which throws
+    // `IllegalStateException("Config.DeviceTrackingMode is set to DISABLED")`
+    // unless device tracking is enabled FIRST. We can't rely on
+    // `XrSessionManager.startAll` to do this from a `LaunchedEffect` — that
+    // coroutine fires after composition, which means the very first
+    // recomposition of `InteractionTierRouter` while the user is in
+    // AMBIENT_HUD would crash. Doing the configure inside `remember(xrSession)`
+    // gives us a synchronous gate: composition only proceeds to construct
+    // the FollowTarget once we've set LAST_KNOWN and gotten a success result.
+    val deviceTrackingReady: Boolean = remember(xrSession, xrGranted) {
+        if (xrSession == null || !xrGranted) {
+            XrLog.i("Session", "deviceTrackingReady=false (session=$xrSession granted=$xrGranted)")
+            false
+        } else {
+            try {
+                val cfg = xrSession.config.copy(deviceTracking = DeviceTrackingMode.LAST_KNOWN)
+                val result = xrSession.configure(cfg)
+                val ok = result is SessionConfigureSuccess
+                if (ok) {
+                    XrLog.i("Session", "deviceTrackingReady=true (LAST_KNOWN configured)")
+                } else {
+                    XrLog.w("Session", "deviceTracking configure failed: $result")
+                }
+                ok
+            } catch (t: Throwable) {
+                XrLog.e("Session", "deviceTracking configure threw", t)
+                false
+            }
+        }
+    }
+
     LaunchedEffect(xrSession, xrGranted) {
         if (xrGranted) {
             try {
@@ -277,7 +481,7 @@ private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
                     scope = scope,
                 )
             } catch (t: Throwable) {
-                Log.e("XrMail", "XR session start failed — voice will still work", t)
+                XrLog.e("Session", "XR session start failed — voice will still work", t)
             }
         }
     }
@@ -290,8 +494,33 @@ private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
 
     LaunchedEffect(handGestures, gestureMapper) {
         handGestures.gestures.collect { gesture ->
+            XrLog.i("Tier", "gesture=$gesture in tier=${viewModel.uiState.value.tier.name}")
+            // bumpInteraction is fired inside SecondaryHandGestures.emit() at
+            // the source of every gesture, so we don't re-bump here. The two
+            // happen on the same coroutine path before any consumer sees the
+            // gesture, which means by the time `gestureMapper.onGesture` runs,
+            // `lastInteractionMs` is already current — the gaze-dwell lockout
+            // observes the bump just like the dispatcher does.
             gestureMapper.onGesture(gesture, viewModel.uiState.value.tier)
         }
+    }
+
+    // Verbose tier-transition trail — single source of truth for "what tier
+    // are we in right now" so timeline-debugging multimodal interactions
+    // becomes a one-grep operation in logcat.
+    LaunchedEffect(viewModel) {
+        var previous: InteractionTier? = null
+        viewModel.uiState
+            .map { it.tier }
+            .distinctUntilChanged()
+            .collect { tier ->
+                XrLog.tier(
+                    from = previous?.name ?: "init",
+                    to = tier.name,
+                    via = "uiState.collect",
+                )
+                previous = tier
+            }
     }
 
     LaunchedEffect(faceTracker, ttsManager) {
@@ -300,15 +529,13 @@ private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
         }
     }
 
-    // Gaze-driven tier transitions are disabled — they were collapsing the
-    // panel whenever the user clicked something (their eyes naturally move
-    // off the notification zone during interaction, which fired the collapse).
-    // Tier changes are driven by gesture/voice/buttons now. Re-enable only
-    // once gaze tracking is debounced AND has an input-lockout during clicks.
-    //
-    // LaunchedEffect(faceTracker) {
-    //     faceTracker.isGazingAtNotificationZone.collect { gazing -> ... }
-    // }
+    // Gaze-driven AMBIENT_HUD expansion is now handled at the panel level by
+    // [com.xremail.app.ui.peripheral.GazeDwellNotificationBanner] using the
+    // OS hover stream + a 400 ms dwell + 800 ms post-interaction lockout
+    // sourced from `handGestures.lastInteractionMs`. The blendshape proxy in
+    // FaceAttentionTracker.isGazingAtNotificationZone is intentionally left
+    // disconnected at the activity level — the dwell logic now lives where
+    // the banner is and benefits from per-element hover routing.
 
     Box(modifier = Modifier.fillMaxSize()) {
         InteractionTierRouter(
@@ -320,6 +547,8 @@ private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
             voiceSessionState = voiceSessionState,
             voiceComposeState = voiceComposeState,
             voiceDraft = voiceDraft,
+            handGestures = handGestures,
+            deviceTrackingReady = deviceTrackingReady,
             onKeyDown = keyboardDispatcher::onKeyDown,
             onExpandToNotifications = viewModel::expandToNotificationCards,
             onCollapseFromNotifications = viewModel::collapseFromNotificationCards,
@@ -342,6 +571,46 @@ private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
             onDismissToast = viewModel::dismissToast,
         )
 
-        GestureFeedbackOverlay(gestures = handGestures.gestures)
+        // Show the 2D pill *only* when the main panel actually owns the user's
+        // foveal view (TRIAGE / FOCUS). For peripheral / lazy-follow tiers the
+        // main panel is offscreen-or-tiny and we'd rather render the pill
+        // head-locked in front of the user — see [HeadLockedGestureFeedback].
+        // Without this gate, both copies would collect from the same
+        // SharedFlow and the user would feel a double-haptic on every pinch.
+        val showInline2dFeedback = uiState.tier == InteractionTier.TRIAGE ||
+            uiState.tier == InteractionTier.FOCUS
+        if (showInline2dFeedback) {
+            GestureFeedbackOverlay(gestures = handGestures.gestures)
+        }
     }
+
+    // NOTE: the head-locked gesture-feedback pill for AMBIENT_HUD /
+    // NOTIFICATION_CARDS used to live here, in its own FollowingSubspace.
+    // It now rides INSIDE the shared FollowingSubspace owned by
+    // InteractionTierRouter so:
+    //   1. There's only one ArDevice tracker for peripheral tiers (was
+    //      three: HUD, cards, gesture pill — all racing each other).
+    //   2. The pill stops sliding relative to the HUD when the user turns,
+    //      because both panels are now in the same follow scope.
+    //   3. Tier transitions don't tear down two separate FollowingSubspaces
+    //      back-to-back — see TierRouter for the full rationale.
 }
+
+/**
+ * Grace period after a function call before we mark the model "idle" again.
+ * Sized to cover the model's typical short verbal confirmation ("Done.",
+ * "Archived.", "Got it.") so the local TTS auto-summary doesn't talk over
+ * the tail end of Gemini's reply.
+ */
+private const val MODEL_TURN_GRACE_MS = 1_500L
+
+/**
+ * After this much time without any Gemini activity (no function call, no
+ * explicit re-summon), close the mic and require another "hey gemini" wake
+ * word to re-open the conversation. Tuned long enough that natural pauses
+ * mid-task ("um, archive that one... and the next") don't dismiss, but
+ * short enough that the user doesn't accidentally leave the mic open
+ * while putting the headset down.
+ */
+private const val IDLE_TIMEOUT_MS = 18_000L
+

@@ -29,18 +29,20 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import com.xremail.app.data.Email
-import com.xremail.app.ui.notifications.NotificationBanner
 import com.xremail.app.ui.theme.XREmailColors
 import com.xremail.app.viewmodel.ToastMessage
 import com.xremail.app.voice.GeminiLiveManager
 import com.xremail.app.voice.TTSManager
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 
 /**
  * Peripheral HUD for walking/on-the-go use.
@@ -60,6 +62,15 @@ fun AmbientHud(
     onExpandToNotifications: () -> Unit,
     onDismissToast: () -> Unit,
     modifier: Modifier = Modifier,
+    /**
+     * Wall-clock millis of the most recent pinch/click. Used by
+     * [GazeDwellNotificationBanner] to suppress dwell-expansion immediately
+     * after an interaction so the user doesn't accidentally re-open what
+     * they just dismissed. Defaults to a never-fired flow so this composable
+     * still renders correctly in previews / 2D mode.
+     */
+    lastInteractionMs: StateFlow<Long> = remember { MutableStateFlow(0L) },
+    onBumpInteraction: () -> Unit = {},
 ) {
     Column(
         modifier = modifier
@@ -77,8 +88,10 @@ fun AmbientHud(
             VoiceStatusIndicator(voiceState = voiceState)
         }
 
-        NotificationBanner(
+        GazeDwellNotificationBanner(
             emails = emails,
+            lastInteractionMs = lastInteractionMs,
+            onBumpInteraction = onBumpInteraction,
             onExpand = onExpandToNotifications,
         )
 

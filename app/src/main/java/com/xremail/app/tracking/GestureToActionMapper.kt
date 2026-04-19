@@ -25,11 +25,43 @@ class GestureToActionMapper(
 
     fun onGesture(gesture: SecondaryHandGestures.Gesture, tier: InteractionTier) {
         Log.d(TAG, "gesture=$gesture tier=$tier")
+        // OPEN_PALM_HOLD_COLLAPSE is the universal "go back" — it's the
+        // gestural inverse of PINCH_HOLD_EXPAND and behaves the same way
+        // regardless of which tier we're in. Handling it here means we
+        // don't have to repeat the same case in every per-tier when().
+        if (gesture == SecondaryHandGestures.Gesture.OPEN_PALM_HOLD_COLLAPSE) {
+            collapseOneTier(tier)
+            return
+        }
         when (tier) {
             InteractionTier.AMBIENT_HUD -> handleAmbientGesture(gesture)
             InteractionTier.NOTIFICATION_CARDS -> handleNotificationCardsGesture(gesture)
             InteractionTier.TRIAGE -> handleTriageGesture(gesture)
             InteractionTier.FOCUS -> handleFocusGesture(gesture)
+        }
+    }
+
+    private fun collapseOneTier(tier: InteractionTier) {
+        when (tier) {
+            InteractionTier.FOCUS -> {
+                Log.d(TAG, "  -> collapseToTriage() (open-palm)")
+                viewModel.collapseToTriage()
+            }
+            InteractionTier.TRIAGE -> {
+                Log.d(TAG, "  -> collapseToHud() (open-palm, skipping cards)")
+                // From the user's perspective TRIAGE collapses straight back
+                // to the ambient banner, not to the cards (which are a
+                // peripheral preview, not a deeper state). Mirrors what
+                // SWIPE_DOWN_DISMISS does in the TRIAGE handler.
+                viewModel.collapseToHud()
+            }
+            InteractionTier.NOTIFICATION_CARDS -> {
+                Log.d(TAG, "  -> collapseFromNotificationCards() (open-palm)")
+                viewModel.collapseFromNotificationCards()
+            }
+            InteractionTier.AMBIENT_HUD -> {
+                Log.d(TAG, "  open-palm in AMBIENT_HUD: nothing to collapse")
+            }
         }
     }
 
@@ -88,6 +120,10 @@ class GestureToActionMapper(
                     viewModel.toggleStar(email)
                 }
             }
+            // OPEN_PALM_HOLD_COLLAPSE handled centrally in [onGesture]; this
+            // case exists only to keep the when exhaustive after the new
+            // enum value was added.
+            SecondaryHandGestures.Gesture.OPEN_PALM_HOLD_COLLAPSE -> Unit
         }
     }
 
@@ -121,6 +157,8 @@ class GestureToActionMapper(
                     viewModel.toggleStar(it)
                 }
             }
+            // OPEN_PALM_HOLD_COLLAPSE handled centrally in [onGesture].
+            SecondaryHandGestures.Gesture.OPEN_PALM_HOLD_COLLAPSE -> Unit
         }
     }
 

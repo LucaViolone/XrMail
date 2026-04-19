@@ -6,7 +6,15 @@
     <uses-permission android:name="android.permission.EYE_TRACKING_COARSE" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.SCENE_UNDERSTANDING" />
+    <!--
+      We intentionally do NOT request `android.permission.SCENE_UNDERSTANDING`
+      — Galaxy XR exposes only the suffixed `_COARSE` / `_FINE` variants, and
+      the bare name pins `ContextCompat.checkSelfPermission()` to DENIED
+      forever. That used to keep `xrGranted = false`, which silently disabled
+      the entire FollowingSubspace head-lock branch in MainActivity and made
+      the AMBIENT_HUD render world-anchored ("not following when I turn").
+      We don't read scene meshes anywhere, so we just drop the request.
+    -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <uses-feature
@@ -18,6 +26,21 @@
     <uses-feature
         android:name="android.software.xr.api.spatial"
         android:required="false" />
+
+    <!--
+      Required so SpeechRecognizer can find the on-device recognition service
+      on API 30+. Without this <queries> declaration, queryIntentServices()
+      returns an empty list even when (for example) Bixby's RecognitionService
+      is installed, and SpeechRecognizer.createSpeechRecognizer() falls back
+      to a no-op stub. The wake-word detector ("hey gemini") relies on this
+      lookup — see WakeWordDetector.pickRecognizerComponent for how we
+      pin to a specific provider when there are several installed.
+    -->
+    <queries>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+    </queries>
 
     <application
         android:allowBackup="true"

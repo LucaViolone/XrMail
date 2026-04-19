@@ -28,6 +28,7 @@ class KeyboardGestureDispatcher(
             Mapping(KeyEvent.KEYCODE_DPAD_DOWN, "Down", "Swipe Down (Dismiss)"),
             Mapping(KeyEvent.KEYCODE_SPACE, "Space", "Pinch Select"),
             Mapping(KeyEvent.KEYCODE_ENTER, "Enter", "Pinch Hold Expand"),
+            Mapping(KeyEvent.KEYCODE_P, "P", "Open Palm Hold (collapse)"),
             Mapping(KeyEvent.KEYCODE_N, "N", "Select next email"),
             Mapping(KeyEvent.KEYCODE_H, "H", "Toggle help overlay"),
         )
@@ -77,6 +78,9 @@ class KeyboardGestureDispatcher(
             }
             KeyEvent.KEYCODE_ENTER -> {
                 handGestures.simulateGesture(SecondaryHandGestures.Gesture.PINCH_HOLD_EXPAND); true
+            }
+            KeyEvent.KEYCODE_P -> {
+                handGestures.simulateGesture(SecondaryHandGestures.Gesture.OPEN_PALM_HOLD_COLLAPSE); true
             }
             KeyEvent.KEYCODE_N -> {
                 selectNextEmail(); true

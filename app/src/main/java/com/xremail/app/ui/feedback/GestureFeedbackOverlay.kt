@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccessTime
 import androidx.compose.material.icons.filled.Archive
+import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.OpenInFull
 import androidx.compose.material.icons.filled.Star
@@ -130,6 +131,8 @@ private fun iconFor(gesture: SecondaryHandGestures.Gesture): ImageVector = when 
     SecondaryHandGestures.Gesture.SWIPE_DOWN_DISMISS -> Icons.Default.KeyboardArrowDown
     SecondaryHandGestures.Gesture.PINCH_SELECT -> Icons.Default.TouchApp
     SecondaryHandGestures.Gesture.PINCH_HOLD_EXPAND -> Icons.Default.OpenInFull
+    // Open palm = "stop / go back". Closest material icon is the back arrow.
+    SecondaryHandGestures.Gesture.OPEN_PALM_HOLD_COLLAPSE -> Icons.Default.ArrowBack
 }
 
 private fun labelFor(gesture: SecondaryHandGestures.Gesture): String = when (gesture) {
@@ -139,4 +142,5 @@ private fun labelFor(gesture: SecondaryHandGestures.Gesture): String = when (ges
     SecondaryHandGestures.Gesture.SWIPE_DOWN_DISMISS -> "Dismissed"
     SecondaryHandGestures.Gesture.PINCH_SELECT -> "Select"
     SecondaryHandGestures.Gesture.PINCH_HOLD_EXPAND -> "Expand"
+    SecondaryHandGestures.Gesture.OPEN_PALM_HOLD_COLLAPSE -> "Collapse"
 }

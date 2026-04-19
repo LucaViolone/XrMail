@@ -34,6 +34,22 @@ object EmailCommandTool {
         data object GoBack : Command()
         data object Refresh : Command()
         data class Speak(val text: String) : Command()
+        /**
+         * Voice-driven tier escalation. Mirrors the gesture / gaze-dwell paths
+         * so the user can say "open notifications" / "show triage" / "focus
+         * mode" instead of pinching.
+         */
+        data class ExpandTier(val target: String) : Command()
+        /**
+         * Inverse of [ExpandTier]: collapse one tier toward the ambient HUD.
+         */
+        data object CollapseOneTier : Command()
+        /**
+         * Skip to the next unread email. Used by the local "next" voice
+         * command and by gesture-driven "skip" actions. Maps to
+         * [com.xremail.app.viewmodel.EmailViewModel.navigateNextUnread].
+         */
+        data object NextUnread : Command()
     }
 
     // ---------------------------------------------------------------------------
@@ -128,7 +144,27 @@ object EmailCommandTool {
 
     private val showInbox = FunctionDeclaration(
         "show_inbox",
-        "Return to the inbox view.",
+        "Open the inbox triage view (the full email list with previews). Use when the " +
+            "user says 'show me my inbox', 'open inbox', 'let me see my emails'. This " +
+            "expands past the ambient banner into the full triage panel.",
+        emptyMap(),
+    )
+
+    private val expandTier = FunctionDeclaration(
+        "expand_tier",
+        "Escalate the UI to a deeper interaction tier without reading a specific email. " +
+            "Use when the user wants to go further into the app: 'open notifications', " +
+            "'show triage', 'focus mode', 'open my email panel'. Pass the target tier as " +
+            "one of: 'notifications', 'triage', 'focus'.",
+        mapOf("target" to Schema.string(
+            "One of 'notifications', 'triage', or 'focus'."
+        )),
+    )
+
+    private val collapseOneTier = FunctionDeclaration(
+        "collapse_one_tier",
+        "Step back one tier toward the ambient HUD. Use when the user says 'go back', " +
+            "'close this', 'minimize', 'collapse', 'I'm done'.",
         emptyMap(),
     )
 
@@ -150,11 +186,27 @@ object EmailCommandTool {
         mapOf("text" to Schema.string("The phrase to speak.")),
     )
 
+    /**
+     * Tools the model sees on each turn. Smaller is faster — every
+     * declaration here costs prompt-prefill tokens and ambiguity for the
+     * model to disambiguate between similar options.
+     *
+     * Intentionally excluded from this list (but still parseable for
+     * backward compatibility, see [parse]):
+     *
+     * - `goBack` — superseded by `collapseOneTier`, which has clearer
+     *   semantics ("move one step toward the ambient HUD").
+     * - `showInbox` — superseded by `expandTier(target='triage')`. One tool
+     *   handles every escalation instead of two overlapping ones.
+     * - `speak` — encouraged the model to call a tool just to say something,
+     *   when it could (and should) just respond conversationally. Removing
+     *   it shaves a function-call round-trip off many short replies.
+     */
     val tool: Tool = Tool.functionDeclarations(
         listOf(
             selectEmail, archiveEmail, snoozeEmail, forwardEmail, reply, search,
             readAloud, summarize, draftReply, sendDraft, filterCategory,
-            showInbox, goBack, refresh, speak,
+            refresh, expandTier, collapseOneTier,
         ),
     )
 
@@ -178,6 +230,8 @@ object EmailCommandTool {
         "go_back" -> Command.GoBack
         "refresh" -> Command.Refresh
         "speak" -> args["text"]?.let { Command.Speak(it) }
+        "expand_tier" -> args["target"]?.let { Command.ExpandTier(it) }
+        "collapse_one_tier" -> Command.CollapseOneTier
         else -> null
     }
 }

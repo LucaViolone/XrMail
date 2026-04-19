@@ -9,6 +9,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -149,6 +150,12 @@ private fun NotificationCardContent(
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
             .background(bgColor)
+            // IMPORTANT: the whole card is the tap target — without this,
+            // NotificationCardStack's onSelectEmail never fires. The SwipeToDismissBox
+            // above only handles horizontal gestures; vertical/click needs its own
+            // handler here. Order matters: clickable BEFORE padding so the entire
+            // visible rectangle (not just the inner content area) is hittable.
+            .clickable(onClick = onClick)
             .padding(12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

@@ -15,6 +15,7 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,7 +26,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Mail
@@ -49,6 +52,7 @@ import androidx.compose.ui.unit.dp
 import com.xremail.app.data.Email
 import com.xremail.app.data.Priority
 import com.xremail.app.ui.theme.XREmailColors
+import com.xremail.app.util.XrLog
 import kotlinx.coroutines.delay
 
 private const val MAX_VISIBLE_CARDS = 5
@@ -212,6 +216,13 @@ fun NotificationCardStack(
     onCollapseToHud: () -> Unit,
     onExpandToTriage: () -> Unit,
     modifier: Modifier = Modifier,
+    /**
+     * Head-tilt-driven scroll delta from [com.xremail.app.tracking.TiltScrollController].
+     * When the user looks down/up while the card stack is open, this is animated
+     * into the scroll state below. Lets the user navigate the notification stack
+     * hands-free while walking — no second-hand pinch needed to scroll.
+     */
+    tiltScrollDelta: Float = 0f,
 ) {
     val unread = emails.filter { !it.isRead }
         .sortedWith(
@@ -219,12 +230,30 @@ fun NotificationCardStack(
                 .thenByDescending { it.urgencyScore }
         )
 
+    val scrollState = rememberScrollState()
+    // KNOWN-LIMITATION: this `LaunchedEffect` only re-runs when
+    // `tiltScrollDelta` *changes*. If `TiltScrollController` ever publishes
+    // the same float twice in a row (e.g. user holds a steady tilt that the
+    // controller maps to a constant px/frame value), the second emission is
+    // conflated by `StateFlow` and we lose a scroll tick. In practice the
+    // tilt-derived delta is continuous and noisy enough that two identical
+    // values almost never arrive consecutively, but if scrolling ever feels
+    // "sticky" this is the place to switch the source to a SharedFlow of
+    // discrete (id, delta) events and key the LaunchedEffect on the id.
+    LaunchedEffect(tiltScrollDelta) {
+        if (tiltScrollDelta != 0f) {
+            XrLog.v("NotifScroll", "tilt -> animateScrollBy($tiltScrollDelta)")
+            scrollState.animateScrollBy(tiltScrollDelta)
+        }
+    }
+
     Column(
         modifier = modifier
             .width(320.dp)
             .clip(RoundedCornerShape(18.dp))
             .background(XREmailColors.surface.copy(alpha = 0.94f))
-            .padding(12.dp),
+            .padding(12.dp)
+            .verticalScroll(scrollState),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Row(
@@ -232,7 +261,17 @@ fun NotificationCardStack(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            // Left header: tap to expand the stack into the TRIAGE panel.
+            // Gives a keyboard/mouse-reachable forward path that doesn't require
+            // a pinch gesture — needed on the emulator and as a fallback when
+            // hand tracking loses the user's hand.
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(onClick = onExpandToTriage)
+                    .padding(horizontal = 4.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 Icon(
                     Icons.Default.Mail,
                     contentDescription = null,
@@ -247,10 +286,17 @@ fun NotificationCardStack(
                     fontWeight = FontWeight.SemiBold,
                 )
             }
+            // Right header: tap to collapse back to the ambient HUD.
+            // Previously onCollapseToHud was a declared-but-unused parameter,
+            // so there was no way out of this tier except voice/gesture.
             Text(
-                text = "pinch to open · swipe to act",
+                text = "tap ✕ to close",
                 style = MaterialTheme.typography.labelSmall,
                 color = XREmailColors.onSurfaceDim,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(onClick = onCollapseToHud)
+                    .padding(horizontal = 6.dp, vertical = 2.dp),
             )
         }
 
