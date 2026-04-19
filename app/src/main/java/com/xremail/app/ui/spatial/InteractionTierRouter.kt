@@ -318,13 +318,16 @@ fun InteractionTierRouter(
                 }
                 else -> 680.dp
             }
-            // Recenter horizontal offset so smaller panels don't drift
-            // way out into the user's far-right peripheral. Bigger panel
-            // → push further right so it doesn't crowd central vision.
+            // Horizontal offset = "how far right of forward gaze does the
+            // panel sit". Bigger numbers = further right = more peripheral.
+            // The user reported the panel as "a little too centered" at
+            // 200/220/260, so we push everything further right while
+            // preserving the relative ordering (bigger panels need to be
+            // pushed further so they don't crowd central vision).
             val panelOffsetX = when (uiState.tier) {
-                InteractionTier.AMBIENT_HUD -> 200.dp
-                InteractionTier.NOTIFICATION_CARDS -> 220.dp
-                else -> 260.dp
+                InteractionTier.AMBIENT_HUD -> 300.dp
+                InteractionTier.NOTIFICATION_CARDS -> 320.dp
+                else -> 360.dp
             }
             SpatialPanel(
                 modifier = SubspaceModifier
