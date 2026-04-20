@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -153,6 +154,7 @@ private fun MailboxTabs(
                     Text(
                         text = label,
                         style = MaterialTheme.typography.labelLarge,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
                     )
                 },
                 colors = FilterChipDefaults.filterChipColors(
@@ -162,6 +164,7 @@ private fun MailboxTabs(
                     selectedLabelColor = XREmailColors.primary,
                 ),
                 shape = RoundedCornerShape(22.dp),
+                modifier = Modifier.defaultMinSize(minWidth = 96.dp, minHeight = 48.dp),
             )
         }
     }

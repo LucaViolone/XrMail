@@ -7,12 +7,14 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -103,27 +105,32 @@ fun InboxPanel(
                 )
             }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 listOf(
                     Mailbox.INBOX to "Inbox",
                     Mailbox.SENT to "Sent",
                     Mailbox.DRAFTS to "Drafts",
                 ).forEach { (mailbox, label) ->
                     val selected = mailbox == activeMailbox
-                    Text(
-                        text = label,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = if (selected) XREmailColors.primary
-                                else XREmailColors.onSurfaceVariant,
+                    Box(
+                        contentAlignment = Alignment.Center,
                         modifier = Modifier
+                            .defaultMinSize(minWidth = 64.dp, minHeight = 40.dp)
                             .clip(RoundedCornerShape(12.dp))
-                            .clickable { onMailboxSelected(mailbox) }
                             .background(
                                 if (selected) XREmailColors.primary.copy(alpha = 0.14f)
                                 else XREmailColors.surfaceVariant.copy(alpha = 0.0f)
                             )
-                            .padding(horizontal = 10.dp, vertical = 4.dp),
-                    )
+                            .clickable { onMailboxSelected(mailbox) }
+                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                    ) {
+                        Text(
+                            text = label,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = if (selected) XREmailColors.primary
+                                    else XREmailColors.onSurfaceVariant,
+                        )
+                    }
                 }
             }
 
