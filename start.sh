@@ -4,14 +4,21 @@ set -euo pipefail
 # ─────────────────────────────────────────────────────────────────────────────
 # XR Mail — Laptop Development Launcher
 #
-# Builds the project and runs it on the best available target.
-# No SDK command-line tools required — just Android Studio + the SDK.
+# One command to spin up the full local stack:
+#   1. Builds the Android app
+#   2. Connects to the first device/emulator (boots an XR AVD if needed)
+#   3. Starts the Ktor backend on :8081 in the background (for Google OAuth)
+#   4. Wires `adb reverse tcp:8081 tcp:8081` so the device's Chrome Custom
+#      Tab can reach the backend at http://localhost:8081/auth/callback
+#   5. Installs + launches the app
 #
 # Usage:
-#   ./start.sh              Build + run on best available target
-#   ./start.sh --build-only Just build the APK
-#   ./start.sh --clean      Clean build caches then build + run
-#   ./start.sh --logs       Tail logcat after launch
+#   ./start.sh              Build + run everything
+#   ./start.sh --build-only Just compile the APK
+#   ./start.sh --clean      Wipe build caches, then build + run
+#   ./start.sh --logs       Tail logcat after launch (Ctrl+C to stop)
+#   ./start.sh --no-backend Skip starting the Ktor backend
+#   ./start.sh --stop       Stop the backend JVM and exit
 # ─────────────────────────────────────────────────────────────────────────────
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -67,22 +74,58 @@ fi
 BUILD_ONLY=false
 CLEAN=false
 TAIL_LOGS=false
+START_BACKEND=true
+STOP_ONLY=false
 
 for arg in "$@"; do
     case "$arg" in
         --build-only) BUILD_ONLY=true ;;
         --clean)      CLEAN=true ;;
         --logs)       TAIL_LOGS=true ;;
+        --no-backend) START_BACKEND=false ;;
+        --stop)       STOP_ONLY=true ;;
         --help|-h)
-            echo "Usage: ./start.sh [--build-only] [--clean] [--logs]"
+            echo "Usage: ./start.sh [--build-only] [--clean] [--logs] [--no-backend] [--stop]"
             echo ""
             echo "  --build-only   Just compile the APK, skip install/launch"
             echo "  --clean        Wipe build caches before building"
             echo "  --logs         Tail logcat after launching the app"
+            echo "  --no-backend   Skip starting the Ktor backend (e.g. you run it yourself)"
+            echo "  --stop         Stop the Ktor backend JVM and exit (no build)"
             exit 0
             ;;
     esac
 done
+
+# ── Backend helpers (used by --stop and the main backend block below) ───────
+BACKEND_PORT="${XRMAIL_BACKEND_PORT:-8081}"
+BACKEND_LOG="$SCRIPT_DIR/backend/backend.log"
+BACKEND_PID_FILE="$SCRIPT_DIR/backend/backend.pid"
+
+stop_backend() {
+    local stopped=false
+    if [[ -f "$BACKEND_PID_FILE" ]]; then
+        local pid
+        pid=$(cat "$BACKEND_PID_FILE" 2>/dev/null || true)
+        if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null || true
+            stopped=true
+        fi
+        rm -f "$BACKEND_PID_FILE"
+    fi
+    local extra
+    extra=$(pgrep -f "com\.xremail\.backend\.ApplicationKt" 2>/dev/null || true)
+    if [[ -n "$extra" ]]; then
+        kill $extra 2>/dev/null || true
+        stopped=true
+    fi
+    $stopped && ok "Backend stopped." || info "No XrMail backend process was running."
+}
+
+if $STOP_ONLY; then
+    stop_backend
+    exit 0
+fi
 
 # ── Build ────────────────────────────────────────────────────────────────────
 info "Building XR Mail..."
@@ -171,12 +214,84 @@ else
     ok "Emulator ready: $TARGET"
 fi
 
-# Google OAuth uses http://localhost:PORT/auth/callback → forward to host Ktor (see backend/.env XRMAIL_BASE_URL).
-BACKEND_REVERSE_PORT="${XRMAIL_BACKEND_PORT:-8081}"
-if "$ADB" -s "$TARGET" reverse "tcp:${BACKEND_REVERSE_PORT}" "tcp:${BACKEND_REVERSE_PORT}"; then
-    ok "adb reverse tcp:${BACKEND_REVERSE_PORT} (emulator localhost → host; required for OAuth)"
+# ── Start Ktor backend (needed for real sign-in; OAuth callbacks land on it) ─
+#
+# We consider a TCP listener on BACKEND_PORT as "backend already running"
+# ONLY if it came from our own ApplicationKt JVM. A foreign process on the
+# port is left alone — we warn and skip so we don't silently talk to a
+# stranger's server.
+backend_already_running() {
+    if command -v lsof >/dev/null 2>&1 && lsof -iTCP:"$BACKEND_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+        local pids
+        pids=$(lsof -tiTCP:"$BACKEND_PORT" -sTCP:LISTEN 2>/dev/null || true)
+        for p in $pids; do
+            if ps -p "$p" -o command= 2>/dev/null | grep -q "com\.xremail\.backend\.ApplicationKt"; then
+                return 0
+            fi
+        done
+        warn "Port ${BACKEND_PORT} is in use by another process (pids: $pids). Skipping backend start."
+        warn "Stop that process or set XRMAIL_BACKEND_PORT to use a different port."
+        return 0
+    fi
+    return 1
+}
+
+wait_for_backend() {
+    local elapsed=0
+    # nc is universally available on macOS; curl is the fallback.
+    until (command -v nc >/dev/null 2>&1 && nc -z localhost "$BACKEND_PORT" >/dev/null 2>&1) \
+        || curl -sfI "http://localhost:${BACKEND_PORT}/" >/dev/null 2>&1; do
+        sleep 1
+        elapsed=$((elapsed + 1))
+        if (( elapsed >= 60 )); then
+            warn "Backend did not bind :${BACKEND_PORT} within ${elapsed}s — continuing anyway."
+            warn "Tail backend/backend.log. Common causes: missing env vars, port conflict, or a slow first compile."
+            return 1
+        fi
+        printf "\r  ${DIM}waiting for backend... %ds${NC}" "$elapsed"
+    done
+    (( elapsed > 0 )) && echo ""
+    return 0
+}
+
+if ! $START_BACKEND; then
+    info "Skipping backend start (--no-backend). Assuming you run it yourself on :${BACKEND_PORT}."
+elif [[ ! -f "$SCRIPT_DIR/backend/.env" ]]; then
+    warn "backend/.env missing — copy backend/env.example, fill in GOOGLE_CLIENT_ID/SECRET, and rerun."
+    warn "Skipping backend start. Tap 'Use mock data' on the sign-in screen to proceed."
+elif backend_already_running; then
+    ok "Ktor backend already listening on :${BACKEND_PORT}"
 else
-    warn "adb reverse failed — run: ./reverse-backend.sh ${BACKEND_REVERSE_PORT} $TARGET"
+    info "Starting Ktor backend on :${BACKEND_PORT} (logs: backend/backend.log)..."
+    # Fully detach the Gradle/JVM from start.sh's stdio and process tree.
+    #
+    #   </dev/null >LOG 2>&1   : break fd 0/1/2 inheritance so we don't hold
+    #                            open the pipe if start.sh was run through
+    #                            `| tee` / `| tail` (terminal would never
+    #                            return until the backend dies).
+    #   &                      : background the job
+    #   disown                 : remove it from start.sh's job table so the
+    #                            shell doesn't wait on it at exit.
+    #
+    # We run this at the top level of start.sh (not inside a ( ) subshell)
+    # because a subshell would hold its own fds to the pipeline and become
+    # the thing that blocks the terminal.
+    nohup "$GRADLE" :backend:run --console=plain -q </dev/null >"$BACKEND_LOG" 2>&1 &
+    BACKEND_PID=$!
+    echo "$BACKEND_PID" > "$BACKEND_PID_FILE"
+    disown "$BACKEND_PID" 2>/dev/null || true
+    if wait_for_backend; then
+        ok "Backend up on http://localhost:${BACKEND_PORT}"
+    fi
+fi
+
+# Google OAuth uses http://localhost:PORT/auth/callback → forward device localhost to host Ktor.
+# This is the ONLY way the Chrome Custom Tab on a real Galaxy XR can reach
+# our Ktor server (10.0.2.2 is emulator-only and will never resolve on device).
+if "$ADB" -s "$TARGET" reverse "tcp:${BACKEND_PORT}" "tcp:${BACKEND_PORT}"; then
+    ok "adb reverse tcp:${BACKEND_PORT} (device localhost → host; required for OAuth)"
+else
+    warn "adb reverse failed — run: ./backend/reverse.sh ${BACKEND_PORT} $TARGET"
 fi
 
 # ── Install + launch ─────────────────────────────────────────────────────────
@@ -194,9 +309,12 @@ echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━
 echo -e "${BOLD}  XR Mail is running${NC}"
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
-echo -e "  ${CYAN}Logs:${NC}    adb logcat --pid=\$(adb shell pidof $APP_PACKAGE) 2>/dev/null"
-echo -e "  ${CYAN}Stop:${NC}    adb shell am force-stop $APP_PACKAGE"
-echo -e "  ${CYAN}Rebuild:${NC} ./start.sh"
+echo -e "  ${CYAN}Backend:${NC}     http://localhost:${BACKEND_PORT}  ${DIM}(device → localhost via adb reverse)${NC}"
+echo -e "  ${CYAN}Backend log:${NC} tail -f backend/backend.log"
+echo -e "  ${CYAN}App logs:${NC}    adb logcat --pid=\$(adb shell pidof $APP_PACKAGE) 2>/dev/null"
+echo -e "  ${CYAN}Stop app:${NC}    adb shell am force-stop $APP_PACKAGE"
+echo -e "  ${CYAN}Stop backend:${NC} ./start.sh --stop"
+echo -e "  ${CYAN}Rebuild:${NC}     ./start.sh"
 echo ""
 
 if $TAIL_LOGS; then

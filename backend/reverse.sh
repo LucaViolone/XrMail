@@ -2,15 +2,16 @@
 # Forward emulator/device localhost:PORT → host localhost:PORT (needed for OAuth redirect to http://localhost:8081).
 # Does not require `adb` on your PATH — uses the Android SDK under ANDROID_HOME / default Mac paths.
 #
-# Usage:
-#   ./reverse-backend.sh              # port 8081, first online device
-#   ./reverse-backend.sh 8081         # custom port
-#   ./reverse-backend.sh 8081 emulator-5554
+# Usage (run from repo root):
+#   ./backend/reverse.sh              # port 8081, first online device
+#   ./backend/reverse.sh 8081         # custom port
+#   ./backend/reverse.sh 8081 emulator-5554
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$SCRIPT_DIR"
+# Run from repo root so relative paths (if any) behave like start.sh.
+cd "$SCRIPT_DIR/.."
 
 find_sdk() {
     for dir in \

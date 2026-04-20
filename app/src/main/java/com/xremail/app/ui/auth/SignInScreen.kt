@@ -19,6 +19,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -29,6 +30,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.xremail.app.backend.service.AuthRepository
 import com.xremail.app.ui.theme.XREmailColors
@@ -37,6 +39,7 @@ import kotlinx.coroutines.launch
 @Composable
 fun SignInScreen(
     authRepository: AuthRepository,
+    authError: MutableState<String?> = remember { mutableStateOf(null) },
     onSignedIn: () -> Unit = {},
     onUseMockData: (() -> Unit)? = null,
 ) {
@@ -84,14 +87,32 @@ fun SignInScreen(
             Button(
                 onClick = {
                     isLoading = true
+                    authError.value = null
                     scope.launch {
-                        authRepository.startSignIn(context)
+                        // startSignIn returns null on success (browser opened);
+                        // any non-null result is a human-readable error we
+                        // must surface so the user isn't staring at a dead
+                        // button wondering what happened.
+                        val err = authRepository.startSignIn(context)
+                        if (err != null) {
+                            authError.value = err
+                        }
                         isLoading = false
                     }
                 },
                 modifier = Modifier.clip(RoundedCornerShape(12.dp)),
             ) {
                 Text("Sign in with Google")
+            }
+
+            authError.value?.let { message ->
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    text = message,
+                    color = XREmailColors.error,
+                    style = MaterialTheme.typography.bodySmall,
+                    textAlign = TextAlign.Center,
+                )
             }
 
             if (onUseMockData != null) {

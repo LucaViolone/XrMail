@@ -8,10 +8,15 @@ enum class EmailAction { READ_FULL, READ_SUMMARY, AUTO_ARCHIVE, NEEDS_REPLY }
 
 /**
  * Which Gmail-style folder an email lives in. Mapped onto Gmail's
- * INBOX/SENT labels on the backend; for mock mode it's the source of
- * truth for the Inbox vs Sent tab switcher.
+ * INBOX / SENT / DRAFT labels on the backend; for mock mode it's the
+ * source of truth for the Inbox / Sent / Drafts tab switcher.
+ *
+ * DRAFTS holds voice-composed messages that haven't been sent yet —
+ * they're persisted through the repository so the user can revisit
+ * them from the Drafts tab even after dismissing the compose UI
+ * (matching Gmail behavior).
  */
-enum class Mailbox { INBOX, SENT }
+enum class Mailbox { INBOX, SENT, DRAFTS }
 
 data class Email(
     val id: String,

@@ -47,6 +47,7 @@ import com.xremail.app.data.EmailCategory
 import com.xremail.app.data.Mailbox
 import com.xremail.app.data.Priority
 import com.xremail.app.tracking.SecondaryHandGestures
+import com.xremail.app.ui.compose.SendConfirmationDialog
 import com.xremail.app.ui.notifications.NotificationCardStack
 import com.xremail.app.ui.peripheral.AmbientHud
 import com.xremail.app.ui.peripheral.CollapseAffordance
@@ -142,6 +143,8 @@ fun InteractionTierRouter(
     onSend: () -> Unit,
     onCancelCompose: () -> Unit,
     onDismissToast: () -> Unit,
+    onConfirmSend: () -> Unit = {},
+    onDismissSendConfirmation: () -> Unit = {},
     onToggleVoice: () -> Unit = {},
     /** Fires a simulated voice reply — shown as "Voice" button in the Focus action bar. */
     onVoiceReply: (() -> Unit)? = null,
@@ -183,19 +186,29 @@ fun InteractionTierRouter(
     // instructional placeholder so when the user happens to glance at it
     // they understand the real UI is the small peripheral panel to the right.
     // ---------------------------------------------------------------------------
+    // Pull the active voice draft once — the send-confirmation dialog can
+    // surface from any tier (peripheral HUD, inbox, or focus), and both
+    // the XR spatial overlay and the fallback overlay reference the same
+    // source of truth. `voiceDraft` arg wins when present (live compose
+    // manager draft) and we fall back to the persisted viewmodel copy so
+    // the dialog stays stable across tier transitions.
+    val activeDraft = voiceDraft ?: uiState.voiceDraft
+    val showConfirmDialog = uiState.showSendConfirmation && activeDraft != null
+
     Surface(
         color = XREmailColors.surface,
         modifier = Modifier.fillMaxSize().then(keyEventModifier),
     ) {
-        if (canUsePeripheral) {
-            MainPanelPlaceholder(
-                pttState = pttState,
-                onToggleVoice = onToggleVoice,
-            )
-        } else {
-            // Emulator / no headset: render the active tier here so dev
-            // iteration still works without an XR runtime.
-            FallbackTierContent(
+        Box(modifier = Modifier.fillMaxSize()) {
+            if (canUsePeripheral) {
+                MainPanelPlaceholder(
+                    pttState = pttState,
+                    onToggleVoice = onToggleVoice,
+                )
+            } else {
+                // Emulator / no headset: render the active tier here so dev
+                // iteration still works without an XR runtime.
+                FallbackTierContent(
                 uiState = uiState,
                 prioritySortedEmails = prioritySortedEmails,
                 ttsState = ttsState,
@@ -219,6 +232,19 @@ fun InteractionTierRouter(
                 onToggleVoice = onToggleVoice,
                 onMailboxSelected = onMailboxSelected,
             )
+        }
+
+        // Fallback / flat-screen rendering of the send-confirmation dialog.
+        // In XR a separate SpatialPanel overlay handles the same state —
+        // see the FollowingSubspace block below — so the user always gets
+        // a visible modal regardless of whether a headset is attached.
+        if (showConfirmDialog && activeDraft != null && !canUsePeripheral) {
+            SendConfirmationDialog(
+                draft = activeDraft,
+                onSend = onConfirmSend,
+                onCancel = onDismissSendConfirmation,
+            )
+        }
         }
     }
 
@@ -339,6 +365,38 @@ fun InteractionTierRouter(
                             onMailboxSelected = onMailboxSelected,
                         )
                     }
+                }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // SEND-CONFIRMATION MODAL (XR) — its own SpatialPanel, parked in front
+    // of the peripheral HUD at eye level so the user doesn't have to
+    // hunt for it. We use a separate, plain Subspace (not the peripheral
+    // FollowingSubspace) because the confirmation should NOT follow head
+    // motion after it appears — it's a deliberate "stop and look" moment,
+    // and if it slid around with head movement the user couldn't comfortably
+    // read the full body before deciding send-vs-cancel.
+    // ---------------------------------------------------------------------------
+    if (canUsePeripheral && xrSession != null && showConfirmDialog && activeDraft != null) {
+        Subspace {
+            SpatialPanel(
+                modifier = SubspaceModifier
+                    .width(560.dp)
+                    .height(620.dp)
+                    .offset(x = 0.dp, y = 0.dp, z = (-280).dp),
+            ) {
+                Surface(
+                    color = XREmailColors.surface,
+                    shape = RoundedCornerShape(22.dp),
+                    modifier = Modifier.fillMaxSize(),
+                ) {
+                    SendConfirmationDialog(
+                        draft = activeDraft,
+                        onSend = onConfirmSend,
+                        onCancel = onDismissSendConfirmation,
+                    )
                 }
             }
         }

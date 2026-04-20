@@ -104,7 +104,11 @@ fun InboxPanel(
             }
 
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                listOf(Mailbox.INBOX to "Inbox", Mailbox.SENT to "Sent").forEach { (mailbox, label) ->
+                listOf(
+                    Mailbox.INBOX to "Inbox",
+                    Mailbox.SENT to "Sent",
+                    Mailbox.DRAFTS to "Drafts",
+                ).forEach { (mailbox, label) ->
                     val selected = mailbox == activeMailbox
                     Text(
                         text = label,

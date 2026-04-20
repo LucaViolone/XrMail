@@ -23,6 +23,14 @@ data class VoiceDraft(
     val draftText: String = "",
     val isGenerating: Boolean = false,
     val confidence: Float = 0f,
+    /**
+     * Repository-assigned id for the persisted draft (mock mode: the
+     * synthetic DRAFTS-folder email). Set after the first successful
+     * [EmailRepository.saveDraft]; used to update or delete the same
+     * draft on revisions / send / cancel so the Drafts folder doesn't
+     * accumulate stale copies of the same message.
+     */
+    val draftId: String? = null,
 )
 
 data class ToastMessage(
@@ -50,6 +58,14 @@ data class EmailUiState(
     val highlightedNotificationId: String? = null,
     val isGazingAtNotifications: Boolean = false,
     val showEmulatorHelp: Boolean = true,
+    /**
+     * When true, the UI overlays the visual send-confirmation window
+     * (full recipient / subject / body + Send/Cancel buttons) on top
+     * of whatever tier is currently showing. Driven by Gemini's
+     * `show_send_confirmation` tool call and by the user's explicit
+     * request to see the draft before sending.
+     */
+    val showSendConfirmation: Boolean = false,
 )
 
 class EmailViewModel(
@@ -78,6 +94,7 @@ class EmailViewModel(
             val labels = when (mailbox) {
                 Mailbox.INBOX -> listOf("INBOX")
                 Mailbox.SENT -> listOf("SENT")
+                Mailbox.DRAFTS -> listOf("DRAFT")
             }
             val result = repository.listEmails(query = query, labels = labels)
 
@@ -189,6 +206,7 @@ class EmailViewModel(
                 tier = InteractionTier.AMBIENT_HUD,
                 isVoiceComposing = false,
                 voiceDraft = null,
+                showSendConfirmation = false,
                 highlightedNotificationId = null,
                 isGazingAtNotifications = false,
             )
@@ -266,6 +284,7 @@ class EmailViewModel(
                 mode = AppMode.READING,
                 isVoiceComposing = false,
                 voiceDraft = null,
+                showSendConfirmation = false,
                 highlightedNotificationId = null,
                 isGazingAtNotifications = false,
                 errorMessage = null,
@@ -389,9 +408,43 @@ class EmailViewModel(
     }
 
     fun cancelCompose() {
+        val draftId = _uiState.value.voiceDraft?.draftId
         _uiState.update {
-            it.copy(mode = AppMode.READING, isVoiceComposing = false, voiceDraft = null)
+            it.copy(
+                mode = AppMode.READING,
+                isVoiceComposing = false,
+                voiceDraft = null,
+                showSendConfirmation = false,
+            )
         }
+        if (draftId != null) {
+            viewModelScope.launch {
+                repository.deleteDraft(draftId).onFailure { err ->
+                    XrLog.w("EmailVM", "deleteDraft (cancel) failed: ${err.message}", err)
+                }
+                if (_uiState.value.activeMailbox == Mailbox.DRAFTS) loadEmails()
+            }
+        }
+    }
+
+    /**
+     * Show the full visual send-confirmation window for the current
+     * in-progress draft (recipient / subject / body + Send + Cancel).
+     * No-op if there's no active draft. Driven by Gemini's
+     * `show_send_confirmation` tool call and by a user request to see
+     * the draft before sending.
+     */
+    fun showSendConfirmation() {
+        val state = _uiState.value
+        if (!state.isVoiceComposing || state.voiceDraft?.draftText.isNullOrBlank()) {
+            XrLog.w("EmailVM", "showSendConfirmation: no active draft — ignoring")
+            return
+        }
+        _uiState.update { it.copy(showSendConfirmation = true) }
+    }
+
+    fun dismissSendConfirmation() {
+        _uiState.update { it.copy(showSendConfirmation = false) }
     }
 
     fun startVoiceCompose() {
@@ -436,6 +489,7 @@ class EmailViewModel(
                 ),
             )
         }
+        persistDraftToFolder()
     }
 
     /**
@@ -457,6 +511,55 @@ class EmailViewModel(
                     draftText = newBody,
                     isGenerating = false,
                 ),
+            )
+        }
+        persistDraftToFolder()
+    }
+
+    /**
+     * Save (or update) the current in-progress [VoiceDraft] into the
+     * Drafts folder via the repository. Called after every body change
+     * — [voiceReply] and [reviseVoiceDraft] — so the Drafts tab always
+     * reflects what's on screen. The returned id gets stashed back on
+     * the draft so subsequent saves update the same entry instead of
+     * creating duplicates.
+     *
+     * Silent on failure (logged only) — draft persistence is a UX
+     * nicety, not a send; a network hiccup here shouldn't interrupt
+     * the compose flow or pop toasts.
+     */
+    private fun persistDraftToFolder() {
+        val state = _uiState.value
+        val selected = state.selectedEmail ?: return
+        val draft = state.voiceDraft ?: return
+        if (draft.draftText.isBlank()) return
+        val emailDraft = EmailDraft(
+            to = listOf(selected.senderEmail),
+            subject = if (draft.subject.isNotBlank()) draft.subject
+                      else "Re: ${selected.subject}",
+            body = draft.draftText,
+            inReplyTo = selected.id,
+        )
+        val existingId = draft.draftId
+        viewModelScope.launch {
+            repository.saveDraft(emailDraft, existingId).fold(
+                onSuccess = { id ->
+                    if (existingId != id) {
+                        _uiState.update {
+                            val cur = it.voiceDraft
+                            if (cur != null) it.copy(voiceDraft = cur.copy(draftId = id))
+                            else it
+                        }
+                    }
+                    // If the Drafts tab is currently visible, refresh so
+                    // the new/updated draft appears in the list.
+                    if (_uiState.value.activeMailbox == Mailbox.DRAFTS) {
+                        loadEmails()
+                    }
+                },
+                onFailure = { err ->
+                    XrLog.w("EmailVM", "saveDraft failed: ${err.message}", err)
+                },
             )
         }
     }
@@ -489,15 +592,14 @@ class EmailViewModel(
             return
         }
 
-        // Optimistically clear the compose UI before the network round-trip
-        // — the user already heard "Drafted, want me to send it?" and said
-        // yes, so leaving the draft visible while we wait for HTTP feels
-        // unresponsive. We restore the draft below if the send fails.
+        val draftId = draft.draftId
+
         _uiState.update {
             it.copy(
                 mode = AppMode.READING,
                 isVoiceComposing = false,
                 voiceDraft = null,
+                showSendConfirmation = false,
                 toastMessage = ToastMessage(
                     "Sending to ${selected.sender}…",
                 ),
@@ -526,6 +628,17 @@ class EmailViewModel(
                                 "Sent to ${selected.sender}",
                             ),
                         )
+                    }
+                    // Clean up the Drafts-folder copy — the message is now
+                    // in Sent, keeping a Draft entry would be misleading.
+                    if (draftId != null) {
+                        repository.deleteDraft(draftId).onFailure { err ->
+                            XrLog.w(
+                                "EmailVM",
+                                "deleteDraft after send failed: ${err.message}",
+                                err,
+                            )
+                        }
                     }
                     // Refresh whichever folder is currently visible so the
                     // new Sent entry appears immediately if the user is on

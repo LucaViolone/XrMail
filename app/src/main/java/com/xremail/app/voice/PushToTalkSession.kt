@@ -28,9 +28,13 @@ import java.util.Locale
 /**
  * Explicit push-to-talk voice session.
  *
- * Tap the chip: [start] opens one [SpeechRecognizer] round.
- * Tap again (or stay silent for the recognizer's timeout): [stop] ends
- * the round and the listener fires [RecognitionListener.onResults].
+ * Tap the chip: [toggle] opens one [SpeechRecognizer] round. Tap again
+ * while listening and [stop] flushes the transcript so anything already
+ * spoken still processes. Tap during SPEAKING or THINKING and the
+ * in-flight TTS/Gemini call is cancelled and a fresh round begins — the
+ * "interrupt via button" replacement for the previous always-on
+ * barge-in mic (which produced constant recognizer-startup beeps and
+ * false interruptions from TTS echo on Galaxy XR).
  *
  * What happens with the transcript:
  *  1. Feed through [CommandGrammar.parse] for instant local matching.
@@ -118,31 +122,67 @@ class PushToTalkSession(
     // ---------------------------------------------------------------------------
 
     /**
-     * Toggle entry point wired to the VoicePrompt chip. IDLE/ERROR -> start
-     * a round. LISTENING -> close the mic so the recognizer flushes results.
-     * THINKING / SPEAKING are "busy" states where a tap is ignored to avoid
-     * yanking the mic mid-turn.
+     * Toggle entry point wired to the VoicePrompt chip. Pure tap-to-talk:
+     * every tap begins a new recognizer round, no matter what was going
+     * on before.
+     *
+     * Semantics by current state:
+     * - IDLE / ERROR          → start a new round.
+     * - LISTENING             → stop the round (flush transcript through
+     *                           onResults so anything already spoken
+     *                           still gets processed). Second-tap to
+     *                           commit, matching the legacy contract.
+     * - SPEAKING              → interrupt TTS and start a new round.
+     *                           This is the replacement for the old
+     *                           always-on barge-in mic: the user taps
+     *                           to interrupt instead of speaking over
+     *                           the agent, which kills the beeping and
+     *                           the false-positive cut-offs.
+     * - THINKING              → cancel the in-flight Gemini reply and
+     *                           start a new round. Otherwise a slow
+     *                           network call would leave the chip
+     *                           unresponsive.
+     *
+     * The "always-on listening" approach (barge-in mic opened during
+     * TTS, auto-restarted after every turn) was tried and produced two
+     * unusable failure modes on Galaxy XR: (1) the on-device
+     * SpeechRecognizer emits a startup beep every time it opens, so the
+     * agent audibly beeped on every TTS start and every turn boundary;
+     * (2) its VAD fires on TTS echo and ambient noise, triggering
+     * spurious interruptions mid-sentence. Explicit tap is the only
+     * interaction model that's actually reliable here.
      */
     fun toggle() {
+        XrLog.v(TAG, "toggle() state=${_state.value}")
         when (_state.value) {
-            State.IDLE, State.ERROR -> start()
             State.LISTENING -> stop()
-            State.THINKING, State.SPEAKING -> {
-                XrLog.v(TAG, "toggle() ignored in state=${_state.value}")
-            }
+            State.IDLE,
+            State.ERROR,
+            State.SPEAKING,
+            State.THINKING -> start()
         }
     }
 
     fun start() {
         runOnMainThread {
-            if (_state.value == State.LISTENING || _state.value == State.THINKING) {
-                XrLog.v(TAG, "start() ignored — already active (state=${_state.value})")
+            if (_state.value == State.LISTENING) {
+                XrLog.v(TAG, "start() ignored — already listening")
                 return@runOnMainThread
             }
-            // Cancel any in-flight reply / speak so the new round starts clean.
+            // Cancel any in-flight reply / speak so the new round starts
+            // clean. This is what makes a tap during SPEAKING/THINKING
+            // behave as "interrupt and listen" — tts.stop() kills the
+            // current utterance, replyJob.cancel() drops the pending
+            // Gemini response, and the old recognizer round (if any)
+            // is cancelled below.
             replyJob?.cancel()
             speakWatcherJob?.cancel()
             tts.stop()
+            try {
+                if (roundActive) recognizer?.cancel()
+            } catch (t: Throwable) {
+                XrLog.w(TAG, "start: recognizer.cancel threw", t)
+            }
             _lastError.value = null
             try {
                 ensureRecognizer()
@@ -280,7 +320,7 @@ class PushToTalkSession(
         }
 
         override fun onBeginningOfSpeech() {
-            XrLog.d(TAG, "onBeginningOfSpeech")
+            XrLog.d(TAG, "onBeginningOfSpeech state=${_state.value}")
         }
 
         override fun onRmsChanged(rmsdB: Float) {}
@@ -295,6 +335,7 @@ class PushToTalkSession(
             val transcript = partialResults
                 ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                 ?.firstOrNull()
+                ?.trim()
                 ?.takeIf { it.isNotBlank() }
             if (transcript != null) _lastTranscript.value = transcript
         }
@@ -334,7 +375,7 @@ class PushToTalkSession(
             val benign = error == SpeechRecognizer.ERROR_NO_MATCH ||
                 error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT
             if (benign) {
-                XrLog.i(TAG, "recognizer onError=$name (benign — back to IDLE)")
+                XrLog.i(TAG, "recognizer onError=$name (benign)")
                 _lastError.value = "Didn't catch that — tap and try again."
                 setState(State.IDLE, "recognizer $name")
             } else {
@@ -434,8 +475,17 @@ class PushToTalkSession(
                     // acknowledgement based on what we dispatched so the
                     // tap-to-talk loop always gives feedback.
                     val fallback = fallbackConfirmation(reply.commands)
-                    XrLog.i(TAG, "commands-only reply — falling back to: \"$fallback\"")
-                    speakThenIdle(fallback)
+                    if (fallback.isBlank()) {
+                        // Dispatcher already spoke (e.g. read_draft) or
+                        // the command is intentionally silent — skip the
+                        // SPEAKING state so we don't hang waiting on a
+                        // TTS round that never fires.
+                        XrLog.i(TAG, "commands-only reply (silent by design)")
+                        setState(State.IDLE, "silent commands-only")
+                    } else {
+                        XrLog.i(TAG, "commands-only reply — falling back to: \"$fallback\"")
+                        speakThenIdle(fallback)
+                    }
                 }
             }.onFailure { err ->
                 XrLog.w(TAG, "gemini reply FAILED in ${elapsedMs}ms: ${err.message}", err)
@@ -463,11 +513,17 @@ class PushToTalkSession(
             is EmailCommandTool.Command.Search -> "Searching."
             is EmailCommandTool.Command.ReadAloud -> "Reading."
             is EmailCommandTool.Command.Summarize -> "Summarizing."
-            is EmailCommandTool.Command.DraftReply -> "Drafted, want me to send it?"
-            is EmailCommandTool.Command.ReviseDraft -> "Updated."
+            is EmailCommandTool.Command.DraftReply ->
+                "Drafted. Read it, show it, or send it?"
+            is EmailCommandTool.Command.ReviseDraft ->
+                "Updated. Read, show, or send?"
             EmailCommandTool.Command.CancelDraft -> "Discarded."
             is EmailCommandTool.Command.SendDraft -> "Sent."
             EmailCommandTool.Command.ArmSendForVoice -> "Ready."
+            EmailCommandTool.Command.ShowSendConfirmation -> "Here's the preview."
+            // read_draft TTS's the body itself in the dispatcher — no
+            // fallback phrase needed, and adding one would talk over it.
+            EmailCommandTool.Command.ReadDraft -> ""
             is EmailCommandTool.Command.FilterCategory -> "Filtering."
             EmailCommandTool.Command.ShowInbox -> "Opening inbox."
             EmailCommandTool.Command.GoBack -> "Going back."
@@ -491,6 +547,9 @@ class PushToTalkSession(
             if (completed == null) {
                 XrLog.w(TAG, "tts.finished timed out after 20s — forcing IDLE")
             }
+            // If the user tapped the chip mid-TTS, toggle() → start()
+            // will have already flipped state to LISTENING and called
+            // tts.stop(). In that case we leave the new round alone.
             if (_state.value == State.SPEAKING) {
                 setState(State.IDLE, "tts done")
             }

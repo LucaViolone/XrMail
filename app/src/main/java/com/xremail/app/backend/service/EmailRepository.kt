@@ -42,6 +42,25 @@ interface EmailRepository {
     suspend fun sendEmail(draft: EmailDraft): Result<Unit>
 
     /**
+     * Persist an in-progress draft to the Drafts folder. If [existingId]
+     * is non-null, updates that draft in place; otherwise creates a new
+     * one. Returns the draft id so the caller can update or delete the
+     * same draft later.
+     *
+     * In mock mode this materializes as an [Email] tagged
+     * [com.xremail.app.data.Mailbox.DRAFTS] — the Drafts tab shows it
+     * immediately. In Gmail mode this is a stub returning a synthetic
+     * id (real Gmail drafts API wiring is a follow-up).
+     */
+    suspend fun saveDraft(draft: EmailDraft, existingId: String? = null): Result<String>
+
+    /**
+     * Remove a persisted draft (used after a successful send, or when
+     * the user explicitly discards the in-progress draft).
+     */
+    suspend fun deleteDraft(draftId: String): Result<Unit>
+
+    /**
      * Marks an email as read.
      */
     suspend fun markAsRead(messageId: String): Result<Unit>

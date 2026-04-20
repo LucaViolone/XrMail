@@ -57,22 +57,22 @@ fun InboxScreen(
                     text = when (activeMailbox) {
                         Mailbox.INBOX -> "Inbox"
                         Mailbox.SENT -> "Sent"
+                        Mailbox.DRAFTS -> "Drafts"
                     },
                     style = MaterialTheme.typography.headlineMedium,
                     color = XREmailColors.onSurfaceStrong,
                 )
-                if (activeMailbox == Mailbox.INBOX) {
-                    val unread = emails.count { !it.isRead }
-                    if (unread > 0) {
-                        Text(
-                            text = "$unread unread",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = XREmailColors.onSurfaceDim,
-                        )
+                val rightLabel = when (activeMailbox) {
+                    Mailbox.INBOX -> {
+                        val unread = emails.count { !it.isRead }
+                        if (unread > 0) "$unread unread" else null
                     }
-                } else {
+                    Mailbox.SENT -> "${emails.size} sent"
+                    Mailbox.DRAFTS -> if (emails.isNotEmpty()) "${emails.size} draft${if (emails.size == 1) "" else "s"}" else null
+                }
+                if (rightLabel != null) {
                     Text(
-                        text = "${emails.size} sent",
+                        text = rightLabel,
                         style = MaterialTheme.typography.labelMedium,
                         color = XREmailColors.onSurfaceDim,
                     )
@@ -141,7 +141,11 @@ private fun MailboxTabs(
     Row(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        listOf(Mailbox.INBOX to "Inbox", Mailbox.SENT to "Sent").forEach { (mailbox, label) ->
+        listOf(
+            Mailbox.INBOX to "Inbox",
+            Mailbox.SENT to "Sent",
+            Mailbox.DRAFTS to "Drafts",
+        ).forEach { (mailbox, label) ->
             FilterChip(
                 selected = activeMailbox == mailbox,
                 onClick = { onMailboxSelected(mailbox) },

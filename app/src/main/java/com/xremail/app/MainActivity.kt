@@ -35,10 +35,14 @@ import androidx.xr.runtime.SessionConfigureSuccess
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import com.xremail.app.backend.service.AuthRepository
+import com.xremail.app.backend.service.JwtPayload
 import com.xremail.app.backend.service.NetworkClient
 import com.xremail.app.backend.service.TokenManager
 import com.xremail.app.backend.service.GmailRepository
 import com.xremail.app.backend.mock.MockEmailRepository
+import kotlinx.coroutines.launch
+import java.net.URLDecoder
+import java.nio.charset.StandardCharsets
 import com.xremail.app.tracking.FaceAttentionTracker
 import com.xremail.app.tracking.GestureToActionMapper
 import com.xremail.app.tracking.KeyboardGestureDispatcher
@@ -66,39 +70,38 @@ class MainActivity : ComponentActivity() {
     // ---------------------------------------------------------------------------
     // Backend wiring.
     //
-    // USE_REAL_BACKEND = true gates the SignInScreen AND makes the app use the
-    // real `GmailRepository` (backed by the Ktor server on BACKEND_URL) instead
-    // of `MockEmailRepository`. Voice commands ("archive this", "send draft",
-    // etc.) operate on real Gmail messages instead of mock data.
+    // Both values come from `app/build.gradle.kts`:
+    //   BuildConfig.USE_REAL_BACKEND — gates SignInScreen and picks
+    //     GmailRepository over MockEmailRepository. Debug builds = true,
+    //     release builds = false (by default). Voice commands operate on
+    //     whichever repository the ViewModel gets.
+    //   BuildConfig.BACKEND_URL — defaults to http://localhost:8081/ which
+    //     works on both emulator and real XR hardware via
+    //     `adb reverse tcp:8081 tcp:8081` (start.sh wires this up).
+    //     DO NOT use 10.0.2.2 — it's the emulator-only host alias and
+    //     silently times out on a physical Galaxy XR, which is exactly
+    //     what made "Sign in with Google" hang on the spinner.
     //
-    // Gemini voice connectivity itself is independent — GeminiLiveManager and
-    // GeminiTextService speak to Firebase AI Logic directly, not to this
-    // backend. Sign-in affects WHICH EMAILS voice operates on, not whether
-    // Gemini connects.
+    // Running checklist before using the real backend:
+    //   1. `cd backend && ./gradlew :backend:run` (reads backend/.env)
+    //      — start.sh now kicks this off automatically.
+    //   2. backend/.env must have GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET
+    //      with "http://localhost:8081/auth/callback" whitelisted in the
+    //      Google Cloud OAuth client's authorized redirect URIs.
+    //   3. xrmail://auth/success must be whitelisted client-side — see
+    //      AndroidManifest.xml's xrmail:// intent-filter (already there).
     //
-    // Running checklist before flipping this on:
-    //   1. `cd backend && ./gradlew run` (listens on localhost:8080)
-    //   2. `backend/.env` has GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET from
-    //      Google Cloud Console (Gmail API enabled, OAuth consent screen
-    //      configured, redirect URI http://localhost:8080/auth/callback and
-    //      xrmail://auth/success whitelisted).
-    //   3. Emulator → BACKEND_URL = "http://10.0.2.2:8080/" (host loopback).
-    //      Device → use your dev machine's LAN IP.
-    //
-    // If the backend isn't reachable the SignInScreen button's coroutine
-    // fails silently via AuthRepository's runCatching — the spinner just
-    // stops. You can still develop UI against the mock repo by flipping
-    // this back to false.
+    // If the backend is unreachable, SignInScreen now surfaces the error
+    // string from AuthRepository instead of silently stopping the spinner.
+    // You can also tap "Use mock data" to bypass the round-trip.
     // ---------------------------------------------------------------------------
 
-    // USE_REAL_BACKEND = true shows SignInScreen on cold start. The screen
-    // has a "Sign in with Google" button (real OAuth round-trip through the
-    // Ktor backend) and a "Use mock data" button (skips auth, swaps in
-    // MockEmailRepository at runtime). While the teammate is still ironing
-    // out the xrmail://auth/success deep-link redirect, the mock button
-    // lets UI work continue without flipping this constant every time.
-    private val USE_REAL_BACKEND = true
-    private val BACKEND_URL = "http://10.0.2.2:8080/" // emulator → host loopback
+    /**
+     * OAuth / network errors shown beneath the Sign-in button. Cleared on
+     * a successful xrmail://auth/success callback; set by AuthRepository
+     * return values and xrmail://auth/error deep links.
+     */
+    private val authErrorState = mutableStateOf<String?>(null)
 
     private lateinit var tokenManager: TokenManager
     private lateinit var authRepository: AuthRepository
@@ -155,7 +158,7 @@ class MainActivity : ComponentActivity() {
         // cleanly. The repository the ViewModel sees is chosen in
         // composition below based on login state + mock override.
         val api = NetworkClient.create(
-            baseUrl = BACKEND_URL,
+            baseUrl = BuildConfig.BACKEND_URL,
             tokenManager = tokenManager,
             debug = true,
         )
@@ -182,14 +185,14 @@ class MainActivity : ComponentActivity() {
                 // persisted across process restarts — relaunching the
                 // app re-shows the sign-in screen so the real OAuth path
                 // is still the default behaviour.
-                var useMockOverride by remember { mutableStateOf(!USE_REAL_BACKEND) }
+                var useMockOverride by remember { mutableStateOf(!BuildConfig.USE_REAL_BACKEND) }
 
                 LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
                     isLoggedIn = authRepository.isLoggedIn
                 }
 
-                val showSignIn = USE_REAL_BACKEND && !isLoggedIn && !useMockOverride
-                val activeRepository = if (USE_REAL_BACKEND && isLoggedIn && !useMockOverride) {
+                val showSignIn = BuildConfig.USE_REAL_BACKEND && !isLoggedIn && !useMockOverride
+                val activeRepository = if (BuildConfig.USE_REAL_BACKEND && isLoggedIn && !useMockOverride) {
                     realRepository
                 } else {
                     mockRepository
@@ -198,10 +201,22 @@ class MainActivity : ComponentActivity() {
                 if (showSignIn) {
                     SignInScreen(
                         authRepository = authRepository,
+                        authError = authErrorState,
                         onSignedIn = { isLoggedIn = true },
                         onUseMockData = { useMockOverride = true },
                     )
                 } else {
+                    // Proactively refresh the JWT if it's within an hour of
+                    // expiring. Runs on every ON_RESUME while signed in so
+                    // we don't surprise the user with a 401 mid-session.
+                    if (BuildConfig.USE_REAL_BACKEND && isLoggedIn) {
+                        val refreshScope = rememberCoroutineScope()
+                        LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+                            refreshScope.launch {
+                                refreshJwtIfNeeded(authRepository, tokenManager)
+                            }
+                        }
+                    }
                     XREmailApp(
                         viewModelFactory = EmailViewModel.Factory(activeRepository)
                     )
@@ -231,18 +246,42 @@ class MainActivity : ComponentActivity() {
 
         when (uri.path) {
             "/success" -> {
+                authErrorState.value = null
                 val state = authRepository.handleCallback(uri)
                 Log.i(TAG, "OAuth success — user: ${tokenManager.getUserEmail()}, state: $state")
             }
             "/error" -> {
-                val reason = uri.getQueryParameter("reason") ?: "unknown"
-                Log.e(TAG, "OAuth error: $reason")
+                val raw = uri.getQueryParameter("reason") ?: "unknown"
+                val decoded = runCatching {
+                    URLDecoder.decode(raw, StandardCharsets.UTF_8.name())
+                }.getOrDefault(raw)
+                authErrorState.value = "Sign-in failed: $decoded"
+                Log.e(TAG, "OAuth error: $decoded")
             }
         }
     }
 
     companion object {
         private const val TAG = "XrMailAuth"
+    }
+}
+
+/**
+ * Refresh the JWT early if it's close to expiring (within 1 h). The
+ * backend re-issues a new JWT as long as the underlying Google refresh
+ * token is still valid; if it fails we let the next authenticated call
+ * hit a 401 and AuthInterceptor will surface the failure through the
+ * normal error path.
+ */
+private suspend fun refreshJwtIfNeeded(
+    authRepository: AuthRepository,
+    tokenManager: TokenManager,
+) {
+    val token = tokenManager.getToken() ?: return
+    val exp = JwtPayload.expiresAtEpochSeconds(token) ?: return
+    val now = System.currentTimeMillis() / 1000L
+    if (exp - now < 3600) {
+        authRepository.refreshToken()
     }
 }
 
@@ -571,6 +610,8 @@ private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
             onSend = { viewModel.sendDraft() },
             onCancelCompose = viewModel::cancelCompose,
             onDismissToast = viewModel::dismissToast,
+            onConfirmSend = viewModel::confirmSend,
+            onDismissSendConfirmation = viewModel::dismissSendConfirmation,
             onToggleVoice = { ptt.toggle() },
             // Voice compose — "Voice" button fires a canned instruction so you can
             // exercise the full GENERATING → draft → send flow without a mic/headset.

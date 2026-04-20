@@ -115,6 +115,14 @@ class VoiceCommandDispatcher(
                 handleSendDraft()
             }
 
+            EmailCommandTool.Command.ShowSendConfirmation -> {
+                handleShowSendConfirmation()
+            }
+
+            EmailCommandTool.Command.ReadDraft -> {
+                handleReadDraft()
+            }
+
             EmailCommandTool.Command.ArmSendForVoice -> {
                 // Consumed upstream in GeminiLiveManager (flips the
                 // voiceSendArmed flag and returns the function response
@@ -175,20 +183,24 @@ class VoiceCommandDispatcher(
     // ---------------------------------------------------------------------------
     // Voice compose flow
     //
-    // The contract:
+    // The contract (updated — NO automatic body readback):
     //   1. draft_reply(body=...) / reply(body=...)  → voiceReply(body)
-    //      stamps the draft into the UI; we TTS the body so the user hears
-    //      what's about to be sent. Critically, NO send happens here.
-    //   2. revise_draft(body=...)  → reviseVoiceDraft(body); TTS again.
+    //      stamps the draft into the UI. The dispatcher does NOT TTS
+    //      the body; Gemini asks the user "read, show, or send?" and
+    //      the user's next turn drives one of:
+    //        - read_draft   → dispatcher TTS's the body verbatim
+    //        - show_send_confirmation → dispatcher pops the preview modal
+    //        - arm_send_for_voice + send_draft → actually send
+    //   2. revise_draft(body=...)  → reviseVoiceDraft(body); stays silent
+    //      (Gemini re-asks "read, show, or send?").
     //   3. cancel_draft  → cancelCompose; TTS "cancelled".
     //   4. send_draft  → only fires if there's a draft; TTS "sent" on
     //      success or "no draft to send" if the model misfired.
     //
-    // The extra TTS calls deliberately overlap with whatever short
-    // confirmation Gemini Live speaks (per its system prompt). Local TTS
-    // wins the race because it starts before the SDK's network round-trip
-    // for audio, so the user hears the draft body before Gemini's
-    // "Drafted, want me to send it?" — which is the order they need.
+    // Rationale: earlier iterations auto-read every draft body aloud,
+    // which the user explicitly asked us to stop doing. Now the choice
+    // of read vs. show vs. send is the user's — expressed per turn —
+    // and falls back to showing the preview when unclear.
     // ---------------------------------------------------------------------------
 
     private fun handleDraftReply(body: String?) {
@@ -199,11 +211,8 @@ class VoiceCommandDispatcher(
         }
         val cleaned = body?.trim().orEmpty()
 
-        // Short-circuit: if Gemini already gave us a body, use it as-is.
         if (cleaned.isNotBlank()) {
             viewModel.voiceReply(cleaned)
-            val actualBody = viewModel.uiState.value.voiceDraft?.draftText.orEmpty()
-            if (actualBody.isNotBlank()) tts.speak(actualBody)
             return
         }
 
@@ -225,11 +234,31 @@ class VoiceCommandDispatcher(
                 body = selected.body,
             ).onSuccess { drafted ->
                 viewModel.reviseVoiceDraft(drafted)
-                tts.speak(drafted)
             }.onFailure {
                 tts.speak("I couldn't draft that. Try again?")
             }
         }
+    }
+
+    private fun handleReadDraft() {
+        val state = viewModel.uiState.value
+        val body = state.voiceDraft?.draftText?.trim().orEmpty()
+        if (!state.isVoiceComposing || body.isBlank()) {
+            XrLog.w(TAG, "read_draft with no active draft — ignoring")
+            tts.speak("No draft to read.")
+            return
+        }
+        tts.speak(body)
+    }
+
+    private fun handleShowSendConfirmation() {
+        val state = viewModel.uiState.value
+        if (!state.isVoiceComposing || state.voiceDraft?.draftText.isNullOrBlank()) {
+            XrLog.w(TAG, "show_send_confirmation with no active draft — ignoring")
+            tts.speak("No draft to preview.")
+            return
+        }
+        viewModel.showSendConfirmation()
     }
 
     private fun summarizeAndSpeak(target: Email) {
@@ -260,8 +289,10 @@ class VoiceCommandDispatcher(
             tts.speak("No draft to revise.")
             return
         }
+        // Stay silent — Gemini re-asks "read, show, or send?". Auto-
+        // speaking the revised body was the exact behaviour the user
+        // asked us to kill.
         viewModel.reviseVoiceDraft(newBody.trim())
-        tts.speak(newBody)
     }
 
     private fun handleCancelDraft() {

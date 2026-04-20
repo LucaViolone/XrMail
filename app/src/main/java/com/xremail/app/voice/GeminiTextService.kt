@@ -344,14 +344,31 @@ class GeminiTextService(
 
             COMPOSE MODE (user asks to reply, write back, draft, respond, send):
               1. Write the FULL reply yourself in 1–4 short sentences.
-              2. Call draft_reply(body=COMPLETE TEXT). Then say ONE short
-                 confirmation like "Drafted, want me to send it?" — do NOT
-                 repeat the draft body out loud, the UI reads it back.
-              3. Revisions: call revise_draft(body=COMPLETE rewritten body).
-              4. To send after explicit user confirmation: FIRST call
-                 arm_send_for_voice, then IMMEDIATELY send_draft in the same
-                 turn. send_draft without a prior arm_send_for_voice is
-                 rejected as a hallucination guard.
+              2. Call draft_reply(body=COMPLETE TEXT). Then ASK the user what
+                 they want to do next: say exactly one short sentence like
+                 "Drafted. Want me to read it, show it, or send it?" — do NOT
+                 speak the body itself. WAIT for the user's reply in the next
+                 turn.
+              3. The user's next answer routes like this:
+                 - "read it" / "read it back" / "read it out loud"
+                     → call read_draft. DO NOT also speak the body yourself,
+                       the tool handles it.
+                 - "show it" / "let me see it" / "bring it up" / "show me
+                   before sending" / (long or important emails where you want
+                   a visual review by default)
+                     → call show_send_confirmation. Say "Here's the preview."
+                 - "send it" / "yes send" / "fire it off"
+                     → FIRST call arm_send_for_voice, then IMMEDIATELY
+                       send_draft in the same turn. send_draft without a
+                       prior arm_send_for_voice is rejected.
+                 - Revisions ("change X to Y", "make it shorter")
+                     → call revise_draft(body=COMPLETE rewritten body). Then
+                       ask "Read, show, or send?" again.
+                 - Cancel ("never mind", "cancel", "throw it out")
+                     → call cancel_draft.
+              4. If the user is unclear, default to show_send_confirmation
+                 rather than sending. NEVER send without explicit
+                 confirmation in words.
 
             Always default to the selected email when one exists. In spoken
             replies reference emails by sender or subject, never by id (but
@@ -467,7 +484,7 @@ class GeminiTextService(
                         )
                         add(
                             "draft_reply",
-                            "Write a complete reply draft for the user. Pass the FULL body in `body` — 1 to 4 short natural sentences, ready to send. The UI reads it back; do NOT speak the draft yourself. Follow with a short confirmation like 'Drafted, want me to send it?'.",
+                            "Write a complete reply draft for the user. Pass the FULL body in `body` — 1 to 4 short natural sentences, ready to send. Do NOT speak the body yourself. After the call, ask the user 'Want me to read it, show it, or send it?' and wait for their answer — the next turn's reply decides whether to call read_draft, show_send_confirmation, or arm_send_for_voice+send_draft.",
                             mapOf(
                                 "emailId" to ("STRING" to "Email id, optional."),
                                 "tone" to ("STRING" to "Tone hint, e.g. 'friendly', optional."),
@@ -493,6 +510,14 @@ class GeminiTextService(
                             "Actually send the draft currently on screen. Requires a prior arm_send_for_voice in the same turn.",
                             mapOf("emailId" to ("STRING" to "Email id, optional.")),
                             required = emptyList(),
+                        )
+                        add(
+                            "show_send_confirmation",
+                            "Pop up a visual confirmation window of the in-progress draft (recipient, subject, body) with Send and Cancel buttons. Use when the user asks to see the draft ('show it', 'let me see it', 'bring it up'), or when the draft is long/important. Only valid while a draft is active.",
+                        )
+                        add(
+                            "read_draft",
+                            "Read the in-progress draft body aloud verbatim. Use only when the user explicitly asks to hear it ('read it', 'read it back'). Only valid while a draft is active.",
                         )
                         add(
                             "filter_category",

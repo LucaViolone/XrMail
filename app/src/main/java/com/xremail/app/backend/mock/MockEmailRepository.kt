@@ -40,6 +40,10 @@ class MockEmailRepository : EmailRepository {
         // existing call sites that don't care about folders keep working.
         val mailbox = when {
             labels.any { it.equals("SENT", ignoreCase = true) } -> Mailbox.SENT
+            labels.any {
+                it.equals("DRAFT", ignoreCase = true) ||
+                it.equals("DRAFTS", ignoreCase = true)
+            } -> Mailbox.DRAFTS
             else -> Mailbox.INBOX
         }
         val inFolder = emails.filter { it.mailbox == mailbox }
@@ -103,6 +107,54 @@ class MockEmailRepository : EmailRepository {
                 "subject=\"${sent.subject}\" bodyLen=${draft.body.length}",
         )
         XrLog.d("MockRepo", "sendEmail body: ${draft.body}")
+        return Result.success(Unit)
+    }
+
+    override suspend fun saveDraft(draft: EmailDraft, existingId: String?): Result<String> {
+        delay(SIMULATED_DELAY_MS)
+        val to = draft.to.firstOrNull() ?: "unknown@recipient"
+        val recipientName = emails.firstOrNull { it.senderEmail == to }?.sender
+            ?: to.substringBefore('@').replaceFirstChar { it.titlecase(Locale.US) }
+        val now = Date()
+        val timestamp = SimpleDateFormat("h:mm a", Locale.US).format(now)
+        val id = existingId ?: "draft-${now.time}"
+        val drafted = Email(
+            id = id,
+            sender = "Draft: to $recipientName",
+            senderEmail = to,
+            subject = draft.subject.ifBlank { "(no subject)" },
+            body = draft.body,
+            timestamp = timestamp,
+            priority = Priority.LOW,
+            category = EmailCategory.PEOPLE,
+            action = EmailAction.NEEDS_REPLY,
+            isRead = true,
+            aiSummary = "Draft — ${draft.body.take(80)}",
+            urgencyScore = 0f,
+            mailbox = Mailbox.DRAFTS,
+        )
+        val existingIdx = emails.indexOfFirst { it.id == id }
+        if (existingIdx >= 0) {
+            emails[existingIdx] = drafted
+            XrLog.i(
+                "MockRepo",
+                "saveDraft: UPDATED id=$id to=${draft.to} " +
+                    "subject=\"${drafted.subject}\" bodyLen=${draft.body.length}",
+            )
+        } else {
+            emails.add(0, drafted)
+            XrLog.i(
+                "MockRepo",
+                "saveDraft: APPENDED id=$id to=${draft.to} " +
+                    "subject=\"${drafted.subject}\" bodyLen=${draft.body.length}",
+            )
+        }
+        return Result.success(id)
+    }
+
+    override suspend fun deleteDraft(draftId: String): Result<Unit> {
+        val removed = emails.removeIf { it.id == draftId && it.mailbox == Mailbox.DRAFTS }
+        XrLog.i("MockRepo", "deleteDraft id=$draftId removed=$removed")
         return Result.success(Unit)
     }
 

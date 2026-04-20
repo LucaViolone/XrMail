@@ -93,10 +93,10 @@ private const val CLOSED_FIST_FINGER_FOLD_MAX_M = 0.051f
 private const val CLOSED_FIST_THUMB_FOLD_MAX_M = 0.072f
 // Hold duration. Bumped from 400ms → 460ms (15% longer) for more intent:
 // fleeting fist-like poses (e.g. hand briefly closing around a door
-// handle) are under 400ms end-to-end, so 460ms ensures only a sustained
-// deliberate clench fires. Still snappy — users won't notice the 60ms
-// difference when they're actually holding.
-private const val CLOSED_FIST_HOLD_DURATION_MS = 460L
+// handle) are under 400ms end-to-end, so 385ms sits just under that
+// floor while still feeling snappy — tuned by ear/feel, not by a
+// fixed percentage off the original 460ms.
+private const val CLOSED_FIST_HOLD_DURATION_MS = 385L
 // Once CLOSED_FIST_HOLD fires we lock it out until the user opens the
 // hand again — without this, holding a fist for 2s fires once then
 // re-fires every dedup window as the timer keeps ticking. Lock releases

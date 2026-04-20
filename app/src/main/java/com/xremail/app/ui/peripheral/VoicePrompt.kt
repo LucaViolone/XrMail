@@ -39,22 +39,21 @@ import com.xremail.app.ui.theme.XREmailColors
 import com.xremail.app.voice.PushToTalkSession
 
 /**
- * Push-to-talk voice indicator and trigger.
+ * Voice chip indicator and trigger.
  *
- * Tap to start a round, tap again to stop. The chip mirrors
- * [PushToTalkSession.State] so the user always knows which stage of the
- * voice turn is happening.
+ * Pure push-to-talk: each tap opens a single recognizer round. A tap
+ * during SPEAKING or THINKING interrupts the in-flight utterance / reply
+ * and immediately opens a fresh round — no hands-free listening, so
+ * there is no startup-beep-per-turn and no TTS-echo barge-in misfires
+ * (both unusable on the Galaxy XR on-device recognizer).
  *
- *   IDLE       -> "Tap to talk"               (green pulse, tappable)
- *   LISTENING  -> "Listening... tap to stop"  (red pulse, tappable)
- *   THINKING   -> "Thinking..."               (amber pulse, not tappable)
- *   SPEAKING   -> "Speaking..."               (muted icon, not tappable)
- *   ERROR      -> "Voice error — tap to retry" (red, tappable)
+ * Labels by state:
  *
- * Under the old Live API + local always-on recognizer this was a
- * three-state overlay that tried to describe two parallel subsystems.
- * Now there's exactly one voice pipeline and the chip can show its
- * literal state.
+ *   IDLE       -> "Tap to talk"
+ *   LISTENING  -> "Listening... tap to stop" (red pulse)
+ *   THINKING   -> "Thinking... tap to cancel"
+ *   SPEAKING   -> "Speaking... tap to interrupt"
+ *   ERROR      -> "Voice error — tap to retry"
  */
 @Composable
 fun VoicePrompt(
@@ -133,7 +132,9 @@ private data class VoiceVisual(
     val tappable: Boolean,
 )
 
-private fun computeVisual(state: PushToTalkSession.State): VoiceVisual = when (state) {
+private fun computeVisual(
+    state: PushToTalkSession.State,
+): VoiceVisual = when (state) {
     PushToTalkSession.State.IDLE -> VoiceVisual(
         label = "Tap to talk",
         iconColor = XREmailColors.aiAccent,
@@ -155,23 +156,29 @@ private fun computeVisual(state: PushToTalkSession.State): VoiceVisual = when (s
     )
 
     PushToTalkSession.State.THINKING -> VoiceVisual(
-        label = "Thinking...",
+        label = "Thinking... tap to cancel",
         iconColor = XREmailColors.priorityMedium,
         textColor = XREmailColors.onSurface,
         bgColor = XREmailColors.priorityMedium.copy(alpha = 0.18f),
         pulse = true,
         muted = false,
-        tappable = false,
+        // Tap must always be available — a stuck Gemini request
+        // would otherwise leave the chip unresponsive.
+        tappable = true,
     )
 
     PushToTalkSession.State.SPEAKING -> VoiceVisual(
-        label = "Speaking...",
+        // Tap-to-interrupt is the replacement for the old always-on
+        // barge-in mic. User hits the chip to stop the agent and start
+        // their own turn — no audible recognizer startup beep like the
+        // auto-opened barge-in had.
+        label = "Speaking... tap to interrupt",
         iconColor = XREmailColors.primary,
         textColor = XREmailColors.onSurface,
         bgColor = XREmailColors.primary.copy(alpha = 0.15f),
         pulse = false,
         muted = false,
-        tappable = false,
+        tappable = true,
     )
 
     PushToTalkSession.State.ERROR -> VoiceVisual(

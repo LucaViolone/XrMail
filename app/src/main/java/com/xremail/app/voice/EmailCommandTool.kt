@@ -48,6 +48,22 @@ object EmailCommandTool {
         data object CancelDraft : Command()
         data class SendDraft(val emailId: String?) : Command()
         /**
+         * Pop up the visual send-confirmation window for the in-progress
+         * draft. The user sees the full recipient/subject/body and taps
+         * Send or Cancel. Use when the user says "show it to me", "let me
+         * see it before sending", "bring it up", or when you decide the
+         * email is long / important enough to warrant a visual review
+         * instead of just speaking it. Only valid while a draft is active.
+         */
+        data object ShowSendConfirmation : Command()
+        /**
+         * Read the current in-progress draft body aloud verbatim. Use
+         * when the user explicitly says "read it", "read it to me", "read
+         * it back". Does not pop a dialog. Only valid while a draft is
+         * active.
+         */
+        data object ReadDraft : Command()
+        /**
          * Safety gate: Gemini Live MUST call `arm_send_for_voice` after the
          * user explicitly confirms ("yes, send it", "fire it off") and
          * BEFORE calling `send_draft`. This double-step prevents model-only
@@ -161,13 +177,13 @@ object EmailCommandTool {
         "draft_reply",
         "Write a complete reply draft for the user to review. " +
             "Pass the FULL body text in `body` — 1 to 4 short sentences, " +
-            "natural and conversational, ready to send as-is. The UI will " +
-            "show the draft and read it back; do NOT also speak the draft " +
-            "yourself. After this call returns, just say a short " +
-            "confirmation like \"Drafted, want me to send it?\". " +
-            "Does NOT send — wait for the user to say \"send it\" or call " +
-            "send_draft. Use this whenever the user asks you to reply, " +
-            "respond, write back, or compose a message.",
+            "natural and conversational, ready to send as-is. " +
+            "After this call returns, ASK the user what they want to do next — " +
+            "e.g. \"Drafted. Want me to read it, show it, or send it?\" — and " +
+            "WAIT for their answer. Do NOT read the draft aloud unless the user " +
+            "explicitly asks you to (then call read_draft). Do NOT send without " +
+            "explicit confirmation. If they say \"show it\" / \"let me see it\" / " +
+            "\"bring it up\", call show_send_confirmation.",
         mapOf(
             "emailId" to Schema.string("Email id, optional. Defaults to the selected email."),
             "tone" to Schema.string("Tone hint, e.g. 'friendly', 'formal', 'apologetic'. Optional."),
@@ -199,11 +215,31 @@ object EmailCommandTool {
             "draft_reply has been called AND arm_send_for_voice has been " +
             "called AND the user has explicitly confirmed (\"send it\", " +
             "\"yes send\", \"fire it off\"). NEVER call this without the " +
-            "user's explicit confirmation — the user must hear the draft " +
-            "read back first. If send_draft is called without a prior " +
-            "arm_send_for_voice the call will be rejected.",
+            "user's explicit confirmation. If send_draft is called without " +
+            "a prior arm_send_for_voice the call will be rejected.",
         mapOf("emailId" to Schema.string("Email id being replied to, optional.")),
         optionalParameters = listOf("emailId"),
+    )
+
+    private val showSendConfirmation = FunctionDeclaration(
+        "show_send_confirmation",
+        "Pop up a full-screen visual confirmation of the in-progress draft " +
+            "(recipient, subject, body) with Send / Cancel buttons. Use when " +
+            "the user says \"show it\", \"let me see it\", \"bring it up\", " +
+            "\"show me before sending\", or when the draft is long/important " +
+            "enough that a visual review is better than just speaking. Only " +
+            "valid while a draft is on screen. Confirm verbally with one short " +
+            "phrase like \"Here's the preview.\".",
+        emptyMap(),
+    )
+
+    private val readDraft = FunctionDeclaration(
+        "read_draft",
+        "Read the in-progress draft body aloud verbatim. Use when the user " +
+            "explicitly says \"read it\", \"read it back\", \"read it out loud\". " +
+            "Do NOT use this unless the user asked to hear it. Only valid while " +
+            "a draft is on screen.",
+        emptyMap(),
     )
 
     private val armSendForVoice = FunctionDeclaration(
@@ -314,7 +350,7 @@ object EmailCommandTool {
             getInboxState,
             selectEmail, archiveEmail, snoozeEmail, forwardEmail, reply, search,
             readAloud, summarize, draftReply, reviseDraft, cancelDraft,
-            armSendForVoice, sendDraft,
+            armSendForVoice, sendDraft, showSendConfirmation, readDraft,
             filterCategory, refresh, expandTier, collapseOneTier,
         ),
     )
@@ -337,6 +373,8 @@ object EmailCommandTool {
         "cancel_draft" -> Command.CancelDraft
         "arm_send_for_voice" -> Command.ArmSendForVoice
         "send_draft" -> Command.SendDraft(args["emailId"])
+        "show_send_confirmation" -> Command.ShowSendConfirmation
+        "read_draft" -> Command.ReadDraft
         "filter_category" -> args["category"]?.let { Command.FilterCategory(it) }
         "show_inbox" -> Command.ShowInbox
         "go_back" -> Command.GoBack

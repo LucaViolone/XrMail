@@ -25,9 +25,26 @@ android {
             props.getProperty("GEMINI_API_KEY", "")
         } else ""
         buildConfigField("String", "GEMINI_API_KEY", "\"$geminiKey\"")
+
+        // Ktor backend URL.
+        //
+        // `localhost` (not 10.0.2.2) works on BOTH the emulator and real XR
+        // hardware as long as `adb reverse tcp:8081 tcp:8081` is wired up —
+        // start.sh does that automatically. 10.0.2.2 is the emulator-only
+        // host-loopback alias and silently fails (~30s connect timeout) on
+        // a physical Galaxy XR, which was what made "Sign in with Google"
+        // hang on the spinner.
+        //
+        // Port 8081 matches ktor.deployment.port in backend/application.conf
+        // (chosen to avoid clashing with :8080 that dev tools often grab).
+        buildConfigField("String", "BACKEND_URL", "\"http://localhost:8081/\"")
+        buildConfigField("Boolean", "USE_REAL_BACKEND", "false")
     }
 
     buildTypes {
+        debug {
+            buildConfigField("Boolean", "USE_REAL_BACKEND", "true")
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(

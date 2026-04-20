@@ -69,6 +69,23 @@ class GmailRepository(
         Unit
     }
 
+    /**
+     * Persist a draft to Gmail. Gmail's real drafts API is a follow-up
+     * — for now we return a client-side synthetic id so the ViewModel's
+     * save/update/delete flow keeps working end-to-end against a live
+     * backend without crashing. The draft won't show up in Gmail's own
+     * drafts folder yet; that requires wiring the Drafts REST endpoints
+     * through [com.xremail.app.backend.service.GmailApi].
+     */
+    override suspend fun saveDraft(
+        draft: EmailDraft,
+        existingId: String?,
+    ): Result<String> =
+        Result.success(existingId ?: "draft-${System.currentTimeMillis()}")
+
+    override suspend fun deleteDraft(draftId: String): Result<Unit> =
+        Result.success(Unit)
+
     override suspend fun archive(messageId: String): Result<Unit> = safeCall {
         api.modifyLabels(
             messageId,
