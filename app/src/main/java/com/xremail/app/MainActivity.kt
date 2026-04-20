@@ -19,7 +19,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
@@ -38,6 +41,7 @@ import com.xremail.app.tracking.GestureToActionMapper
 import com.xremail.app.tracking.SecondaryHandGestures
 import com.xremail.app.tracking.TiltScrollController
 import com.xremail.app.tracking.XrSessionManager
+import com.xremail.app.ui.auth.SignInScreen
 import com.xremail.app.ui.spatial.DisplayMode
 import com.xremail.app.ui.spatial.DisplayModeRouter
 import com.xremail.app.ui.feedback.GestureFeedbackOverlay
@@ -88,9 +92,26 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             XREmailTheme {
-                XREmailApp(
-                    viewModelFactory = EmailViewModel.Factory(emailRepository)
-                )
+                // Track login state reactively so the UI switches automatically
+                // after the OAuth deep-link callback fires.
+                var isLoggedIn by rememberSaveable { mutableStateOf(authRepository.isLoggedIn) }
+
+                // Re-check on every resume — the OAuth deep link fires onNewIntent
+                // then onResume, so by the time we're here the token is already saved.
+                LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+                    isLoggedIn = authRepository.isLoggedIn
+                }
+
+                if (USE_REAL_BACKEND && !isLoggedIn) {
+                    SignInScreen(
+                        authRepository = authRepository,
+                        onSignedIn = { isLoggedIn = true },
+                    )
+                } else {
+                    XREmailApp(
+                        viewModelFactory = EmailViewModel.Factory(emailRepository)
+                    )
+                }
             }
         }
 

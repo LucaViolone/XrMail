@@ -9,3 +9,7 @@
 .cxx
 local.properties
 /app/build
+
+# Backend secrets — never commit these
+backend/.env
+backend/data/

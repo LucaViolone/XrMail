@@ -59,6 +59,9 @@ dependencies {
     implementation(libs.exposed.jdbc)
     implementation(libs.h2.database)
 
+    // JavaMail — needed by GmailService to build MIME messages for sending
+    implementation(libs.java.mail)
+
     // Logging
     implementation(libs.logback.classic)
 

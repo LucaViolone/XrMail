@@ -34,6 +34,7 @@ googleApiServicesGmail = "v1-rev20231218-2.0.0"
 jwtAuth = "4.4.0"
 exposed = "0.61.0"
 h2 = "2.3.232"
+javaMail = "1.6.2"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -95,6 +96,7 @@ exposed-core = { group = "org.jetbrains.exposed", name = "exposed-core", version
 exposed-dao = { group = "org.jetbrains.exposed", name = "exposed-dao", version.ref = "exposed" }
 exposed-jdbc = { group = "org.jetbrains.exposed", name = "exposed-jdbc", version.ref = "exposed" }
 h2-database = { group = "com.h2database", name = "h2", version.ref = "h2" }
+java-mail = { group = "com.sun.mail", name = "javax.mail", version.ref = "javaMail" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
