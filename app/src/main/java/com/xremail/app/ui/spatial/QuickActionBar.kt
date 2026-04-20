@@ -18,6 +18,7 @@ import androidx.compose.material.icons.automirrored.filled.Reply
 import androidx.compose.material.icons.filled.AccessTime
 import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.Forward
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -36,6 +37,8 @@ fun QuickActionBar(
     onArchive: () -> Unit,
     onSnooze: () -> Unit,
     onForward: () -> Unit,
+    /** When non-null, a Voice Reply button is shown next to Reply. */
+    onVoiceReply: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     Row(
@@ -69,6 +72,13 @@ fun QuickActionBar(
             label = "Reply",
             onClick = onReply,
         )
+        if (onVoiceReply != null) {
+            SecondaryAction(
+                icon = Icons.Default.Mic,
+                label = "Voice",
+                onClick = onVoiceReply,
+            )
+        }
         SecondaryAction(
             icon = Icons.Default.Forward,
             label = "Forward",

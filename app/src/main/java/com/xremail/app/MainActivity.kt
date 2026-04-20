@@ -54,6 +54,7 @@ import com.xremail.app.ui.theme.XREmailTheme
 import com.xremail.app.viewmodel.EmailViewModel
 import com.xremail.app.viewmodel.InteractionTier
 import com.xremail.app.voice.GeminiLiveManager
+import com.xremail.app.voice.GeminiTextService
 import com.xremail.app.voice.TTSManager
 import com.xremail.app.voice.VoiceCommandDispatcher
 import com.xremail.app.voice.VoiceComposeManager
@@ -195,9 +196,10 @@ private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
 
     val ttsManager = remember { TTSManager(context) }
     val geminiLive = remember { GeminiLiveManager() }
+    val geminiText = remember { GeminiTextService() }
     val voiceCompose = remember { VoiceComposeManager(ttsManager) }
     val voiceDispatcher = remember(viewModel) {
-        VoiceCommandDispatcher(viewModel, ttsManager)
+        VoiceCommandDispatcher(viewModel, ttsManager, geminiText = geminiText, scope = scope)
     }
 
     // Runtime permissions — mic for Gemini Live, XR sensors for session.configure.
@@ -484,8 +486,28 @@ private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
     val ttsProgress by ttsManager.progress.collectAsStateWithLifecycle()
     val voiceSessionState by geminiLive.state.collectAsStateWithLifecycle()
     val localRecognizerState by localCommands.state.collectAsStateWithLifecycle()
-    val voiceComposeState by voiceCompose.state.collectAsStateWithLifecycle()
-    val voiceDraft by voiceCompose.draft.collectAsStateWithLifecycle()
+    // The standalone VoiceComposeManager is still around for future
+    // Gemini-driven flows (edit/confirm via live voice). For the current
+    // "Voice" button + canned-reply demo the ViewModel is the source of
+    // truth: `viewModel.voiceReply(body)` pushes the draft into
+    // `uiState.voiceDraft` / `uiState.isVoiceComposing`, and we derive a
+    // matching compose-state below so the overlay UI (which gates on
+    // `VoiceComposeManager.ComposeState`) actually renders.
+    val _voiceComposeManagerState by voiceCompose.state.collectAsStateWithLifecycle()
+    val _voiceComposeManagerDraft by voiceCompose.draft.collectAsStateWithLifecycle()
+    val voiceDraft = _voiceComposeManagerDraft ?: uiState.voiceDraft
+    val voiceComposeState: VoiceComposeManager.ComposeState = when {
+        _voiceComposeManagerState != VoiceComposeManager.ComposeState.IDLE ->
+            _voiceComposeManagerState
+        uiState.isVoiceComposing && uiState.voiceDraft?.isGenerating == true ->
+            VoiceComposeManager.ComposeState.GENERATING
+        uiState.isVoiceComposing && uiState.voiceDraft?.draftText?.isNotBlank() == true ->
+            VoiceComposeManager.ComposeState.AWAITING_CONFIRM
+        uiState.isVoiceComposing ->
+            VoiceComposeManager.ComposeState.LISTENING
+        else ->
+            VoiceComposeManager.ComposeState.IDLE
+    }
     val tiltScrollDelta by tiltScroll.scrollDelta.collectAsStateWithLifecycle()
 
     val xrSession = LocalSession.current
@@ -625,6 +647,11 @@ private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
             onCancelCompose = viewModel::cancelCompose,
             onDismissToast = viewModel::dismissToast,
             onSummonGemini = { geminiLive.summon() },
+            // Voice compose — "Voice" button fires a canned instruction so you can
+            // exercise the full GENERATING → draft → send flow without a mic/headset.
+            onVoiceReply = { viewModel.voiceReply("I'll get back to you by Friday") },
+            onConfirmVoiceSend = viewModel::sendDraft,
+            onCancelVoice = viewModel::cancelCompose,
         )
 
         // Show the 2D pill *only* when the main panel actually owns the user's

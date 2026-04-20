@@ -6,6 +6,10 @@ import com.xremail.app.data.EmailCategory
 import com.xremail.app.util.XrLog
 import com.xremail.app.viewmodel.EmailViewModel
 import com.xremail.app.viewmodel.InteractionTier
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.launch
 
 /**
  * Executes [EmailCommandTool.Command]s produced by [GeminiLiveManager].
@@ -14,10 +18,20 @@ import com.xremail.app.viewmodel.InteractionTier
  * audio, and UI state updates happen through [EmailViewModel] StateFlows.
  * Local TTS is used only for the deterministic `speak` / `summarize` paths
  * when we want a quick spoken readback without another model round-trip.
+ *
+ * [geminiText] is optional. When provided, `summarize` and empty-body
+ * `draft_reply` trigger a one-shot Gemini text call so the spoken summary /
+ * draft actually reflects the live email rather than a canned `aiSummary`
+ * field. When null we fall back to the canned text path. Keeping it nullable
+ * means demo mode (mock repo, no backend sign-in) still works even if
+ * Firebase AI credentials aren't wired — the voice pipeline degrades rather
+ * than crashes.
  */
 class VoiceCommandDispatcher(
     private val viewModel: EmailViewModel,
     private val tts: TTSManager,
+    private val geminiText: GeminiTextService? = null,
+    private val scope: CoroutineScope = MainScope(),
 ) {
 
     fun dispatch(command: EmailCommandTool.Command) {
@@ -83,7 +97,7 @@ class VoiceCommandDispatcher(
 
             is EmailCommandTool.Command.Summarize -> {
                 val target = resolveEmail(command.emailId, selected) ?: return
-                tts.speak(target.aiSummary.ifBlank { target.subject })
+                summarizeAndSpeak(target)
             }
 
             is EmailCommandTool.Command.DraftReply -> {
@@ -100,6 +114,16 @@ class VoiceCommandDispatcher(
 
             is EmailCommandTool.Command.SendDraft -> {
                 handleSendDraft()
+            }
+
+            EmailCommandTool.Command.ArmSendForVoice -> {
+                // Consumed upstream in GeminiLiveManager (flips the
+                // voiceSendArmed flag and returns the function response
+                // directly). We still receive it here so it shows up in
+                // dispatch logs for debugging, but no UI-side work is
+                // needed — arming is a model-facing contract, not a
+                // user-facing state change.
+                XrLog.v(TAG, "arm_send_for_voice dispatched (no-op on dispatcher side)")
             }
 
             is EmailCommandTool.Command.FilterCategory -> {
@@ -175,15 +199,58 @@ class VoiceCommandDispatcher(
             return
         }
         val cleaned = body?.trim().orEmpty()
-        viewModel.voiceReply(cleaned)
-        // After voiceReply, the UI is in voiceComposing mode with the
-        // draft visible. Read the actual body the user is about to send,
-        // not a meta confirmation — they need to verify the words.
-        val actualBody = viewModel.uiState.value.voiceDraft?.draftText.orEmpty()
-        if (actualBody.isNotBlank()) {
-            tts.speak(actualBody)
-        } else {
+
+        // Short-circuit: if Gemini already gave us a body, use it as-is.
+        if (cleaned.isNotBlank()) {
+            viewModel.voiceReply(cleaned)
+            val actualBody = viewModel.uiState.value.voiceDraft?.draftText.orEmpty()
+            if (actualBody.isNotBlank()) tts.speak(actualBody)
+            return
+        }
+
+        // Empty-body draft_reply: try the text service to generate one
+        // before giving up. Keeps the "hey, draft a reply" path useful
+        // even when the Live model forgets to fill `body`.
+        val textService = geminiText
+        if (textService == null) {
+            viewModel.voiceReply("")
             tts.speak("I couldn't draft that. Try again?")
+            return
+        }
+        // Optimistically flip to voice-compose (isGenerating) so the UI
+        // shows a spinner while we wait on the model.
+        viewModel.voiceReply("")
+        scope.launch {
+            textService.draftReply(
+                subject = selected.subject,
+                body = selected.body,
+            ).onSuccess { drafted ->
+                viewModel.reviseVoiceDraft(drafted)
+                tts.speak(drafted)
+            }.onFailure {
+                tts.speak("I couldn't draft that. Try again?")
+            }
+        }
+    }
+
+    private fun summarizeAndSpeak(target: Email) {
+        val textService = geminiText
+        if (textService == null) {
+            // Fallback path used by demo mode: canned aiSummary / subject.
+            tts.speak(target.aiSummary.ifBlank { target.subject })
+            return
+        }
+        // Speak the canned summary first for immediate feedback, then
+        // override with Gemini's live summary when it lands (if different).
+        val canned = target.aiSummary.ifBlank { target.subject }
+        tts.speak(canned)
+        scope.launch {
+            textService.summarizeEmail(subject = target.subject, body = target.body)
+                .onSuccess { live ->
+                    if (live.isNotBlank() && live != canned) {
+                        tts.speak(live)
+                    }
+                }
         }
     }
 

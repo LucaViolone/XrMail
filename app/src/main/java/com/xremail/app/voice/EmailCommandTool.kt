@@ -47,6 +47,18 @@ object EmailCommandTool {
          */
         data object CancelDraft : Command()
         data class SendDraft(val emailId: String?) : Command()
+        /**
+         * Safety gate: Gemini Live MUST call `arm_send_for_voice` after the
+         * user explicitly confirms ("yes, send it", "fire it off") and
+         * BEFORE calling `send_draft`. This double-step prevents model-only
+         * hallucinations from ever shipping an email. GeminiLiveManager
+         * tracks the armed state; `send_draft` is rejected if not armed.
+         *
+         * The dispatcher doesn't need to do anything for this command —
+         * it's consumed upstream in GeminiLiveManager. Included in the
+         * sealed class so the Command plumbing stays exhaustive.
+         */
+        data object ArmSendForVoice : Command()
         data class FilterCategory(val category: String) : Command()
         data object ShowInbox : Command()
         data object GoBack : Command()
@@ -184,12 +196,25 @@ object EmailCommandTool {
     private val sendDraft = FunctionDeclaration(
         "send_draft",
         "Actually send the draft currently on screen. Only valid AFTER " +
-            "draft_reply has been called and the user has explicitly " +
-            "confirmed (\"send it\", \"yes send\", \"fire it off\"). NEVER " +
-            "call this without the user's explicit confirmation — the user " +
-            "must hear the draft read back first.",
+            "draft_reply has been called AND arm_send_for_voice has been " +
+            "called AND the user has explicitly confirmed (\"send it\", " +
+            "\"yes send\", \"fire it off\"). NEVER call this without the " +
+            "user's explicit confirmation — the user must hear the draft " +
+            "read back first. If send_draft is called without a prior " +
+            "arm_send_for_voice the call will be rejected.",
         mapOf("emailId" to Schema.string("Email id being replied to, optional.")),
         optionalParameters = listOf("emailId"),
+    )
+
+    private val armSendForVoice = FunctionDeclaration(
+        "arm_send_for_voice",
+        "Two-step safety gate before sending by voice. After draft_reply " +
+            "and after the user explicitly confirms they want to send " +
+            "(\"yes send\", \"fire it off\"), call THIS first, then " +
+            "IMMEDIATELY call send_draft. Never skip this step — " +
+            "send_draft without a prior arm_send_for_voice is rejected " +
+            "as a hallucination guard.",
+        emptyMap(),
     )
 
     private val filterCategory = FunctionDeclaration(
@@ -288,7 +313,8 @@ object EmailCommandTool {
         listOf(
             getInboxState,
             selectEmail, archiveEmail, snoozeEmail, forwardEmail, reply, search,
-            readAloud, summarize, draftReply, reviseDraft, cancelDraft, sendDraft,
+            readAloud, summarize, draftReply, reviseDraft, cancelDraft,
+            armSendForVoice, sendDraft,
             filterCategory, refresh, expandTier, collapseOneTier,
         ),
     )
@@ -309,6 +335,7 @@ object EmailCommandTool {
         "draft_reply" -> Command.DraftReply(args["emailId"], args["tone"], args["body"])
         "revise_draft" -> args["body"]?.let { Command.ReviseDraft(it) }
         "cancel_draft" -> Command.CancelDraft
+        "arm_send_for_voice" -> Command.ArmSendForVoice
         "send_draft" -> Command.SendDraft(args["emailId"])
         "filter_category" -> args["category"]?.let { Command.FilterCategory(it) }
         "show_inbox" -> Command.ShowInbox

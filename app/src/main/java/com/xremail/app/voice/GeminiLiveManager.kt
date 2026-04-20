@@ -129,6 +129,19 @@ class GeminiLiveManager {
     val lastError: StateFlow<String?> = _lastError.asStateFlow()
 
     /**
+     * Two-step send safety flag. The model must call `arm_send_for_voice`
+     * AFTER the user explicitly confirms ("yes send it") and BEFORE
+     * `send_draft`. Any `send_draft` without a prior arm is rejected with
+     * an informative response so the model can retry correctly.
+     *
+     * The flag auto-resets the moment a send_draft is processed (pass or
+     * fail) so the model can't arm once and then spam sends on subsequent
+     * drafts. Also resets when a draft is cancelled or the session tears
+     * down.
+     */
+    @Volatile private var voiceSendArmed: Boolean = false
+
+    /**
      * Register a callback that returns a short text block describing the
      * currently visible UI state (selected email id, inbox focus, etc).
      * Injected into system prompt on every turn so the model has fresh grounding.
@@ -324,6 +337,7 @@ class GeminiLiveManager {
         sessionJob = null
         _state.value = SessionState.CONNECTED
         _modelSpeaking.value = false
+        voiceSendArmed = false
         XrLog.i(TAG, "Gemini DISMISSED — mic closed, session kept warm")
         if (live != null && scope != null) {
             scope.launch(Dispatchers.Default) {
@@ -353,6 +367,7 @@ class GeminiLiveManager {
         sessionJob = null
         _state.value = SessionState.DISCONNECTED
         _modelSpeaking.value = false
+        voiceSendArmed = false
         if (live != null && scope != null) {
             scope.launch(Dispatchers.Default) {
                 try {
@@ -519,6 +534,70 @@ class GeminiLiveManager {
             )
         }
 
+        // --- Send safety gate --------------------------------------------
+        // arm_send_for_voice: flip the armed flag; the model's next call
+        // should be send_draft. We still tryEmit the command so it shows
+        // up in the dispatch log for debugging — the dispatcher's branch
+        // for ArmSendForVoice is an intentional no-op because the arming
+        // state lives here in the manager, not in the view model.
+        if (command == EmailCommandTool.Command.ArmSendForVoice) {
+            voiceSendArmed = true
+            _commands.tryEmit(command)
+            XrLog.i(TAG, "arm_send_for_voice: send is now armed")
+            return FunctionResponsePart(
+                name = call.name,
+                response = buildJsonObject {
+                    put("status", JsonPrimitive("ok"))
+                    put(
+                        "message",
+                        JsonPrimitive(
+                            "Send armed. Call send_draft now — this is a one-shot arm and " +
+                                "auto-disarms after the next send_draft attempt.",
+                        ),
+                    )
+                },
+            )
+        }
+
+        // send_draft: refuse if not armed. Tell the model why so it can
+        // call arm_send_for_voice and retry on its own turn.
+        if (command is EmailCommandTool.Command.SendDraft) {
+            val wasArmed = voiceSendArmed
+            voiceSendArmed = false
+            if (!wasArmed) {
+                XrLog.w(TAG, "send_draft rejected: arm_send_for_voice was not called first")
+                return FunctionResponsePart(
+                    name = call.name,
+                    response = buildJsonObject {
+                        put("status", JsonPrimitive("error"))
+                        put("code", JsonPrimitive("not_armed"))
+                        put(
+                            "message",
+                            JsonPrimitive(
+                                "send_draft rejected because arm_send_for_voice was not called first. " +
+                                    "If the user just confirmed, call arm_send_for_voice and then " +
+                                    "send_draft in the same turn.",
+                            ),
+                        )
+                    },
+                )
+            }
+            _commands.tryEmit(command)
+            return FunctionResponsePart(
+                name = call.name,
+                response = buildJsonObject {
+                    put("status", JsonPrimitive("ok"))
+                    put("message", JsonPrimitive("Sending draft."))
+                },
+            )
+        }
+
+        // cancel_draft also disarms so a leftover flag doesn't carry across
+        // drafts.
+        if (command == EmailCommandTool.Command.CancelDraft) {
+            voiceSendArmed = false
+        }
+
         return if (command != null) {
             _commands.tryEmit(command)
             FunctionResponsePart(
@@ -587,7 +666,7 @@ class GeminiLiveManager {
               2. Write the FULL reply yourself in 1-4 short sentences, natural and ready-to-send.
               3. Pass the complete text in draft_reply(body=...). Then say ONE short confirmation like "Drafted, want me to send it?" — DO NOT speak the draft body, the UI reads it back.
               4. If the user revises, call revise_draft(body=...) with the COMPLETE rewritten body.
-              5. Only call send_draft after the user explicitly confirms ("send it", "yes", "fire it").
+              5. To send: FIRST call arm_send_for_voice, THEN IMMEDIATELY call send_draft in the same turn. Only do this after the user explicitly confirms ("send it", "yes", "fire it"). A send_draft without a prior arm_send_for_voice is rejected.
 
             Always default to the selected email when one exists. Reference emails by sender or subject, never id. If a request is genuinely ambiguous, ask ONE tight clarifying question instead of guessing — but ALWAYS say something out loud, every turn.
         """.trimIndent()

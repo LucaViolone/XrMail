@@ -143,6 +143,10 @@ fun InteractionTierRouter(
     onCancelCompose: () -> Unit,
     onDismissToast: () -> Unit,
     onSummonGemini: () -> Unit = {},
+    /** Fires a simulated voice reply — shown as "Voice" button in the Focus action bar. */
+    onVoiceReply: (() -> Unit)? = null,
+    onConfirmVoiceSend: (() -> Unit)? = null,
+    onCancelVoice: (() -> Unit)? = null,
 ) {
     val keyEventModifier = Modifier
         .onPreviewKeyEvent { event: KeyEvent ->
@@ -406,6 +410,11 @@ fun InteractionTierRouter(
                 onSend = onSend,
                 onCancelCompose = onCancelCompose,
                 onCollapse = onCollapseToInbox,
+                onVoiceReply = onVoiceReply,
+                voiceDraft = voiceDraft,
+                voiceComposeState = voiceComposeState,
+                onConfirmVoiceSend = onConfirmVoiceSend,
+                onCancelVoice = onCancelVoice,
             )
         }
     }

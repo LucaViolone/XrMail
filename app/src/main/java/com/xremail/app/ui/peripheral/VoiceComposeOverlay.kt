@@ -21,12 +21,15 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -45,6 +48,10 @@ import com.xremail.app.voice.VoiceComposeManager
 fun VoiceComposeOverlay(
     draft: VoiceDraft?,
     composeState: VoiceComposeManager.ComposeState,
+    /** Called when the user taps Send — replaces pinch gesture for emulator testing. */
+    onConfirmSend: (() -> Unit)? = null,
+    /** Called when the user taps Cancel. */
+    onCancel: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     AnimatedVisibility(
@@ -117,6 +124,40 @@ fun VoiceComposeOverlay(
                     color = XREmailColors.primary,
                     fontWeight = FontWeight.Medium,
                 )
+            }
+
+            // Send / Cancel — shown in AWAITING_CONFIRM so emulator users don't
+            // need a pinch gesture to finish the flow.
+            if (composeState == VoiceComposeManager.ComposeState.AWAITING_CONFIRM &&
+                (onConfirmSend != null || onCancel != null)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                ) {
+                    if (onCancel != null) {
+                        OutlinedButton(onClick = onCancel) {
+                            Icon(
+                                Icons.Default.Close,
+                                contentDescription = "Cancel",
+                                modifier = Modifier.size(16.dp),
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text("Cancel")
+                        }
+                    }
+                    if (onConfirmSend != null) {
+                        FilledTonalButton(onClick = onConfirmSend) {
+                            Icon(
+                                Icons.Default.Check,
+                                contentDescription = "Send",
+                                modifier = Modifier.size(16.dp),
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text("Send")
+                        }
+                    }
+                }
             }
         }
     }
