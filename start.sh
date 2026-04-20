@@ -129,104 +129,13 @@ wait_for_device() {
 
 TARGET=""
 
-# ── Pick a target ───────────────────────────────────────────────────────────
-# Order of preference:
-#   1. A physical device that's online (`device` state) — always wins.
-#   2. A physical device that's connected but not yet online (`offline` /
-#      `unauthorized` / `no permissions`) — try to recover it before
-#      giving up. We do NOT fall through to the emulator in this case,
-#      because the user obviously wants to deploy to the headset they
-#      just plugged in.
-#   3. A running emulator that's online.
-#   4. No devices at all → start an emulator from disk.
-#
-# Why this matters: previously the script ran
-#   `adb devices | grep -E "[[:space:]]device$" | grep -v offline`
-# which silently dropped a plugged-in-but-suspended Galaxy XR headset
-# from consideration and then booted an XR emulator over USB while the
-# real headset sat there ignored. Builds went to the wrong place and
-# the user couldn't tell from the script output.
-list_devices() {
-    # Strips the "List of devices attached" header and any blank lines,
-    # leaving rows like:
-    #   R3GYB0AR2XD	device usb:336592896X transport_id:5
-    #   emulator-5554	device product:sdk_gphone64_arm64 ...
-    #   R3GYB0AR2XD	offline
-    # Always exits 0 even when adb has nothing to print.
-    "$ADB" devices -l 2>/dev/null \
-        | grep -vE "^(List of devices|\\s*$)" \
-        || true
-}
-
-physical_device_serial() {
-    # First column of the first row whose serial does NOT start with
-    # `emulator-`. Empty string if none.
-    list_devices | awk '$1 !~ /^emulator-/ {print $1; exit}'
-}
-
-physical_device_state() {
-    # Second column for the first physical row (device / offline /
-    # unauthorized / authorizing / no permissions). Empty when no
-    # physical row exists.
-    list_devices | awk '$1 !~ /^emulator-/ {print $2; exit}'
-}
-
-emulator_online_serial() {
-    list_devices | awk '$1 ~ /^emulator-/ && $2 == "device" {print $1; exit}'
-}
-
-PHYSICAL=$(physical_device_serial)
-PHYSICAL_STATE=$(physical_device_state)
-
-if [[ -n "$PHYSICAL" ]]; then
-    case "$PHYSICAL_STATE" in
-        device)
-            TARGET="$PHYSICAL"
-            ok "Using physical device: $TARGET"
-            ;;
-        offline|authorizing)
-            warn "Physical device $PHYSICAL is connected but $PHYSICAL_STATE."
-            info "Attempting to wake it (adb reconnect + 10s poll)..."
-            "$ADB" reconnect >/dev/null 2>&1 || true
-            for i in {1..10}; do
-                sleep 1
-                STATE=$(physical_device_state)
-                if [[ "$STATE" == "device" ]]; then
-                    TARGET="$PHYSICAL"
-                    ok "Physical device came online: $TARGET"
-                    break
-                fi
-            done
-            if [[ -z "$TARGET" ]]; then
-                fail "Physical device $PHYSICAL is still $PHYSICAL_STATE after 10s.\n\n\
-  Wake the headset (put it on, or hold the power button briefly) and re-run\n\
-  ./start.sh. If you wanted to deploy to the emulator instead, unplug the\n\
-  headset first."
-            fi
-            ;;
-        unauthorized)
-            fail "Physical device $PHYSICAL is connected but UNAUTHORIZED.\n\n\
-  Put the headset on and accept the 'Allow USB debugging?' prompt that's\n\
-  showing in your view, then re-run ./start.sh.\n\n\
-  We did NOT fall back to the emulator on purpose — the headset is\n\
-  clearly the intended target."
-            ;;
-        "no permissions"*)
-            fail "Physical device $PHYSICAL is connected but adb has no permissions.\n\n\
-  Try: \`adb kill-server && sudo adb start-server\` (macOS USB perms)\n\
-  Or unplug and replug the headset cable, then re-run ./start.sh."
-            ;;
-        *)
-            warn "Physical device $PHYSICAL is in unrecognized state: $PHYSICAL_STATE"
-            fail "Refusing to fall back to the emulator while the headset is plugged in.\n\
-  Unplug the headset if you want to deploy to the emulator instead."
-            ;;
-    esac
-elif [[ -n "$(emulator_online_serial)" ]]; then
-    TARGET="$(emulator_online_serial)"
-    ok "Using running emulator: $TARGET"
+# Check for anything already running
+RUNNING=$("$ADB" devices 2>/dev/null | grep -E "[[:space:]]device$" | grep -v offline | head -1 | awk '{print $1}' || true)
+if [[ -n "$RUNNING" ]]; then
+    TARGET="$RUNNING"
+    ok "Using connected device: $TARGET"
 else
-    # No physical device, no running emulator — start one from disk.
+    # Nothing running — try to start an emulator
     AVDS=$("$EMULATOR" -list-avds 2>/dev/null || true)
 
     if [[ -z "$AVDS" ]]; then
@@ -258,8 +167,16 @@ else
     fi
     echo ""
 
-    TARGET="$(emulator_online_serial)"
+    TARGET=$("$ADB" devices | grep -E "[[:space:]]device$" | grep -v offline | head -1 | awk '{print $1}')
     ok "Emulator ready: $TARGET"
+fi
+
+# Google OAuth uses http://localhost:PORT/auth/callback → forward to host Ktor (see backend/.env XRMAIL_BASE_URL).
+BACKEND_REVERSE_PORT="${XRMAIL_BACKEND_PORT:-8081}"
+if "$ADB" -s "$TARGET" reverse "tcp:${BACKEND_REVERSE_PORT}" "tcp:${BACKEND_REVERSE_PORT}"; then
+    ok "adb reverse tcp:${BACKEND_REVERSE_PORT} (emulator localhost → host; required for OAuth)"
+else
+    warn "adb reverse failed — run: ./reverse-backend.sh ${BACKEND_REVERSE_PORT} $TARGET"
 fi
 
 # ── Install + launch ─────────────────────────────────────────────────────────

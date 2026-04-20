@@ -22,6 +22,39 @@ application {
     applicationDefaultJvmArgs = listOf("-Dio.ktor.development=$isDevelopment")
 }
 
+/** KEY=value lines from `backend/.env` (gitignored). OS environment wins if already set. */
+fun readBackendDotEnv(): Map<String, String> {
+    val f = layout.projectDirectory.file(".env").asFile
+    if (!f.exists()) return emptyMap()
+    return f.readLines()
+        .asSequence()
+        .map { it.trim() }
+        .filter { it.isNotEmpty() && !it.startsWith("#") }
+        .mapNotNull { line ->
+            val idx = line.indexOf('=')
+            if (idx <= 0) return@mapNotNull null
+            val key = line.substring(0, idx).trim()
+            if (key.isEmpty()) return@mapNotNull null
+            var value = line.substring(idx + 1).trim()
+            if (value.length >= 2) {
+                val q = value.first()
+                if ((q == '"' || q == '\'') && value.last() == q) {
+                    value = value.substring(1, value.length - 1)
+                }
+            }
+            key to value
+        }
+        .toMap()
+}
+
+tasks.named<JavaExec>("run") {
+    readBackendDotEnv().forEach { (k, v) ->
+        if (!environment.containsKey(k)) {
+            environment(k, v)
+        }
+    }
+}
+
 dependencies {
     // Ktor server
     implementation(libs.ktor.server.core)
@@ -57,7 +90,11 @@ dependencies {
     implementation(libs.exposed.core)
     implementation(libs.exposed.dao)
     implementation(libs.exposed.jdbc)
+    implementation(libs.exposed.java.time)
     implementation(libs.h2.database)
+
+    // JavaMail — needed by GmailService to build MIME messages for sending
+    implementation(libs.java.mail)
 
     // Logging
     implementation(libs.logback.classic)

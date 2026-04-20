@@ -10,7 +10,7 @@ import org.jetbrains.exposed.sql.transactions.transaction
  *
  * H2 is used for local token/session storage during development.
  * For production deployments, swap the JDBC URL to PostgreSQL or SQLite
- * by updating application.yaml — no code changes required.
+ * by updating application.conf / env — no code changes required.
  */
 object DatabaseFactory {
 

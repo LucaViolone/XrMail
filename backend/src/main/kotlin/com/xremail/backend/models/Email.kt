@@ -101,3 +101,8 @@ data class AuthCallbackResponse(
     val token: String,      // JWT for the Android client
     val email: String,      // Authenticated Gmail address
 )
+
+@Serializable
+data class TokenRefreshDto(
+    val token: String,
+)

@@ -57,7 +57,8 @@ class TokenService(private val config: JwtConfig) {
         refreshToken: String,
         expiresAt: Instant,
     ) = transaction {
-        val existing = OAuthTokensTable.select { OAuthTokensTable.userId eq userId }
+        val existing = OAuthTokensTable.selectAll()
+            .where { OAuthTokensTable.userId eq userId }
             .singleOrNull()
 
         if (existing == null) {
@@ -67,15 +68,15 @@ class TokenService(private val config: JwtConfig) {
                 it[OAuthTokensTable.accessToken] = accessToken
                 it[OAuthTokensTable.refreshToken] = refreshToken
                 it[OAuthTokensTable.expiresAt] = expiresAt
-                it[createdAt] = Instant.now()
-                it[updatedAt] = Instant.now()
+                it[OAuthTokensTable.createdAt] = Instant.now()
+                it[OAuthTokensTable.updatedAt] = Instant.now()
             }
         } else {
-            OAuthTokensTable.update({ OAuthTokensTable.userId eq userId }) {
+            OAuthTokensTable.update(where = { OAuthTokensTable.userId eq userId }) {
                 it[OAuthTokensTable.accessToken] = accessToken
                 it[OAuthTokensTable.refreshToken] = refreshToken
                 it[OAuthTokensTable.expiresAt] = expiresAt
-                it[updatedAt] = Instant.now()
+                it[OAuthTokensTable.updatedAt] = Instant.now()
             }
         }
     }
@@ -89,10 +90,10 @@ class TokenService(private val config: JwtConfig) {
         newAccessToken: String,
         newExpiresAt: Instant,
     ) = transaction {
-        OAuthTokensTable.update({ OAuthTokensTable.userId eq userId }) {
-            it[accessToken] = newAccessToken
-            it[expiresAt] = newExpiresAt
-            it[updatedAt] = Instant.now()
+        OAuthTokensTable.update(where = { OAuthTokensTable.userId eq userId }) {
+            it[OAuthTokensTable.accessToken] = newAccessToken
+            it[OAuthTokensTable.expiresAt] = newExpiresAt
+            it[OAuthTokensTable.updatedAt] = Instant.now()
         }
     }
 
@@ -100,7 +101,8 @@ class TokenService(private val config: JwtConfig) {
      * Returns the stored token row for a user, or null if not found.
      */
     fun getTokenRow(userId: String): TokenRow? = transaction {
-        OAuthTokensTable.select { OAuthTokensTable.userId eq userId }
+        OAuthTokensTable.selectAll()
+            .where { OAuthTokensTable.userId eq userId }
             .singleOrNull()
             ?.let {
                 TokenRow(
@@ -117,7 +119,16 @@ class TokenService(private val config: JwtConfig) {
      * Deletes the stored tokens for a user (called on logout / revocation).
      */
     fun deleteTokens(userId: String) = transaction {
-        OAuthTokensTable.deleteWhere { OAuthTokensTable.userId eq userId }
+        val ps = connection.prepareStatement(
+            "DELETE FROM oauth_tokens WHERE user_id = ?",
+            false,
+        )
+        try {
+            ps.set(1, userId)
+            ps.executeUpdate()
+        } finally {
+            ps.closeIfPossible()
+        }
     }
 }
 

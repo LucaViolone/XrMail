@@ -19,6 +19,7 @@ import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.client.request.*
 import io.ktor.serialization.kotlinx.json.*
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 import org.apache.commons.codec.binary.Base64
 import org.jetbrains.exposed.sql.select
 import org.jetbrains.exposed.sql.transactions.transaction
@@ -50,7 +51,14 @@ class GmailService(private val config: GoogleConfig) {
 
     // Internal HTTP client used for token operations not covered by the Google SDK
     private val httpClient = HttpClient(CIO) {
-        install(ContentNegotiation) { json() }
+        install(ContentNegotiation) {
+            json(
+                Json {
+                    ignoreUnknownKeys = true
+                    isLenient = true
+                },
+            )
+        }
     }
 
     // ---------------------------------------------------------------------------

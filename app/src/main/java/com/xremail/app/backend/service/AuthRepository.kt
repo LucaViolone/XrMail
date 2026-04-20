@@ -33,23 +33,31 @@ class AuthRepository(
      * Fetches the Google OAuth authorization URL from the backend and opens
      * it in a Chrome Custom Tab so the user can sign in without leaving XrMail.
      *
-     * @param context  Android context (Activity recommended for Custom Tab theming)
-     * @param state    Optional opaque string echoed back in the deep link callback
-     *                 (use this to navigate to a specific screen after auth)
+     * @return `null` if the browser was opened successfully; otherwise a short error message.
      */
-    suspend fun startSignIn(context: Context, state: String = "") {
-        val response = runCatching {
-            api.getLoginUrl(state = state)
-        }.getOrNull() ?: return
+    suspend fun startSignIn(context: Context, state: String = ""): String? {
+        val response = runCatching { api.getLoginUrl(state = state) }.getOrNull()
+            ?: return "Could not reach server. Start the XrMail backend and check the URL."
 
-        val body = response.body()?.data ?: return
-        val authUrl = body.authorizationUrl
+        if (!response.isSuccessful) {
+            val err = response.errorBody()?.string().orEmpty().take(120)
+            return "Server error ${response.code()}: ${err.ifBlank { response.message() }}"
+        }
 
+        val envelope = response.body()
+            ?: return "Empty response from server."
+
+        if (!envelope.success || envelope.data == null) {
+            return envelope.error?.message ?: "Could not get sign-in URL."
+        }
+
+        val authUrl = envelope.data.authorizationUrl
         val customTab = CustomTabsIntent.Builder()
             .setShowTitle(true)
             .build()
 
         customTab.launchUrl(context, Uri.parse(authUrl))
+        return null
     }
 
     /**

@@ -4,7 +4,7 @@ import io.ktor.server.config.*
 
 /**
  * Central configuration for the XrMail backend.
- * All values are read from application.yaml (or environment variables in production).
+ * All values are read from application.conf (values substituted from environment variables).
  */
 data class AppConfig(
     val server: ServerConfig,
@@ -15,11 +15,13 @@ data class AppConfig(
     val database: DatabaseConfig,
 ) {
     companion object {
-        fun load(config: ApplicationConfig): AppConfig = AppConfig(
+        fun load(config: ApplicationConfig): AppConfig {
+            val baseUrl = config.property("xrmail.server.baseUrl").getString().trimEnd('/')
+            return AppConfig(
             server = ServerConfig(
                 host = config.propertyOrNull("ktor.deployment.host")?.getString() ?: "0.0.0.0",
-                port = config.propertyOrNull("ktor.deployment.port")?.getString()?.toInt() ?: 8080,
-                baseUrl = config.property("xrmail.server.baseUrl").getString(),
+                port = config.propertyOrNull("ktor.deployment.port")?.getString()?.toInt() ?: 8081,
+                baseUrl = baseUrl,
             ),
             jwt = JwtConfig(
                 secret = config.property("xrmail.jwt.secret").getString(),
@@ -30,27 +32,32 @@ data class AppConfig(
             google = GoogleConfig(
                 clientId = config.property("xrmail.google.clientId").getString(),
                 clientSecret = config.property("xrmail.google.clientSecret").getString(),
-                redirectUri = config.property("xrmail.google.redirectUri").getString(),
-                scopes = config.property("xrmail.google.scopes").getString().split(","),
+                redirectUri = "$baseUrl/auth/callback",
+                scopes = config.property("xrmail.google.scopes").getString()
+                    .split(",")
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() },
             ),
             whisper = WhisperConfig(
-                apiKey = config.property("xrmail.whisper.apiKey").getString(),
+                apiKey = config.propertyOrNull("xrmail.whisper.apiKey")?.getString().orEmpty(),
                 apiUrl = config.propertyOrNull("xrmail.whisper.apiUrl")?.getString()
                     ?: "https://api.openai.com/v1/audio/transcriptions",
                 model = config.propertyOrNull("xrmail.whisper.model")?.getString() ?: "whisper-1",
             ),
             gemini = GeminiConfig(
-                apiKey = config.property("xrmail.gemini.apiKey").getString(),
+                apiKey = config.propertyOrNull("xrmail.gemini.apiKey")?.getString().orEmpty(),
                 model = config.propertyOrNull("xrmail.gemini.model")?.getString()
                     ?: "gemini-1.5-flash",
             ),
             database = DatabaseConfig(
+                // AUTO_SERVER=TRUE: if another dev JVM still holds the file, connect instead of failing locked.
                 url = config.propertyOrNull("xrmail.database.url")?.getString()
-                    ?: "jdbc:h2:file:./data/xrmail;DB_CLOSE_DELAY=-1",
+                    ?: "jdbc:h2:file:./data/xrmail;DB_CLOSE_DELAY=-1;AUTO_SERVER=TRUE",
                 driver = config.propertyOrNull("xrmail.database.driver")?.getString()
                     ?: "org.h2.Driver",
             ),
-        )
+            )
+        }
     }
 }
 
