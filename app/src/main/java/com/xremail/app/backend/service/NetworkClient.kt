@@ -24,7 +24,7 @@ object NetworkClient {
     /**
      * Creates a [XrMailApiService] pointed at [baseUrl].
      *
-     * @param baseUrl     The XrMail backend URL, e.g. "http://10.0.2.2:8080/" (emulator)
+     * @param baseUrl     The XrMail backend URL, e.g. "http://10.0.2.2:8081/" (emulator)
      *                    or your production URL. Must end with "/".
      * @param tokenManager The [TokenManager] used to read the stored JWT.
      * @param debug       When true, full request/response bodies are logged to Logcat.

@@ -15,9 +15,17 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"
+
+        // Release builds stay on mock data unless you flip this to true.
+        buildConfigField("Boolean", "USE_REAL_BACKEND", "false")
+        buildConfigField("String", "BACKEND_URL", "\"http://10.0.2.2:8081/\"")
     }
 
     buildTypes {
+        debug {
+            // Debug APK talks to Ktor on the host machine (emulator: 10.0.2.2).
+            buildConfigField("Boolean", "USE_REAL_BACKEND", "true")
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(
@@ -38,6 +46,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 

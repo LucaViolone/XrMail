@@ -16,7 +16,9 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -35,11 +37,13 @@ import kotlinx.coroutines.launch
 @Composable
 fun SignInScreen(
     authRepository: AuthRepository,
+    authError: MutableState<String?>,
     onSignedIn: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var isLoading by remember { mutableStateOf(false) }
+    val oauthOrNetworkError by authError
 
     Column(
         modifier = Modifier
@@ -75,14 +79,29 @@ fun SignInScreen(
 
         Spacer(Modifier.height(40.dp))
 
+        oauthOrNetworkError?.let { msg ->
+            Text(
+                text = msg,
+                style = MaterialTheme.typography.bodyMedium,
+                color = XREmailColors.error,
+            )
+            Spacer(Modifier.height(12.dp))
+            TextButton(onClick = { authError.value = null }) {
+                Text("Dismiss", color = XREmailColors.onSurfaceVariant)
+            }
+            Spacer(Modifier.height(16.dp))
+        }
+
         if (isLoading) {
             CircularProgressIndicator(color = XREmailColors.primary)
         } else {
             Button(
                 onClick = {
+                    authError.value = null
                     isLoading = true
                     scope.launch {
-                        authRepository.startSignIn(context)
+                        val err = authRepository.startSignIn(context)
+                        if (err != null) authError.value = err
                         isLoading = false
                     }
                 },

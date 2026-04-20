@@ -117,6 +117,7 @@ fun InteractionTierRouter(
                         ttsProgress = ttsProgress,
                         voiceState = voiceSessionState,
                         toastMessage = uiState.toastMessage,
+                        errorMessage = uiState.errorMessage,
                         onExpandToNotifications = onExpandToNotifications,
                         onDismissToast = onDismissToast,
                     )

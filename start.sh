@@ -171,6 +171,14 @@ else
     ok "Emulator ready: $TARGET"
 fi
 
+# Google OAuth uses http://localhost:PORT/auth/callback → forward to host Ktor (see backend/.env XRMAIL_BASE_URL).
+BACKEND_REVERSE_PORT="${XRMAIL_BACKEND_PORT:-8081}"
+if "$ADB" -s "$TARGET" reverse "tcp:${BACKEND_REVERSE_PORT}" "tcp:${BACKEND_REVERSE_PORT}"; then
+    ok "adb reverse tcp:${BACKEND_REVERSE_PORT} (emulator localhost → host; required for OAuth)"
+else
+    warn "adb reverse failed — run: ./reverse-backend.sh ${BACKEND_REVERSE_PORT} $TARGET"
+fi
+
 # ── Install + launch ─────────────────────────────────────────────────────────
 info "Installing..."
 "$ADB" -s "$TARGET" install -r -t "$APK" >/dev/null 2>&1 || \

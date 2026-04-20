@@ -57,6 +57,8 @@ fun AmbientHud(
     ttsProgress: Float,
     voiceState: GeminiLiveManager.SessionState,
     toastMessage: ToastMessage?,
+    /** Shown when /emails failed (e.g. 401, backend down) — otherwise invisible. */
+    errorMessage: String? = null,
     onExpandToNotifications: () -> Unit,
     onDismissToast: () -> Unit,
     modifier: Modifier = Modifier,
@@ -75,6 +77,15 @@ fun AmbientHud(
             horizontalArrangement = Arrangement.End,
         ) {
             VoiceStatusIndicator(voiceState = voiceState)
+        }
+
+        if (!errorMessage.isNullOrBlank()) {
+            Text(
+                text = errorMessage,
+                style = MaterialTheme.typography.labelSmall,
+                color = XREmailColors.priorityHigh,
+                modifier = Modifier.padding(bottom = 4.dp),
+            )
         }
 
         NotificationBanner(

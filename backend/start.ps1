@@ -5,7 +5,7 @@ $envFile = "$PSScriptRoot\.env"
 
 if (-Not (Test-Path $envFile)) {
     Write-Error ".env file not found at $envFile"
-    Write-Host "Copy backend\.env.example to backend\.env and fill in your values."
+    Write-Host "Create backend\.env (see backend\env.example)."
     exit 1
 }
 

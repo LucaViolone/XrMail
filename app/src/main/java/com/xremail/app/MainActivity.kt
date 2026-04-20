@@ -5,6 +5,8 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.util.Log
+import java.net.URLDecoder
+import java.nio.charset.StandardCharsets
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -29,9 +31,11 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.xr.compose.platform.LocalSession
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import com.xremail.app.backend.service.AuthRepository
+import com.xremail.app.backend.service.JwtPayload
 import com.xremail.app.backend.service.NetworkClient
 import com.xremail.app.backend.service.TokenManager
 import com.xremail.app.backend.service.GmailRepository
@@ -57,12 +61,8 @@ import com.xremail.app.voice.VoiceComposeManager
 
 class MainActivity : ComponentActivity() {
 
-    // ---------------------------------------------------------------------------
-    // Backend wiring — swap USE_REAL_BACKEND to true once the server is running
-    // ---------------------------------------------------------------------------
-
-    private val USE_REAL_BACKEND = false
-    private val BACKEND_URL = "http://10.0.2.2:8080/" // emulator → host loopback
+    /** OAuth / network errors shown on [SignInScreen]. */
+    private val authErrorState = mutableStateOf<String?>(null)
 
     private lateinit var tokenManager: TokenManager
     private lateinit var authRepository: AuthRepository
@@ -73,18 +73,20 @@ class MainActivity : ComponentActivity() {
 
         tokenManager = TokenManager(applicationContext)
 
-        val emailRepository = if (USE_REAL_BACKEND) {
+        val useRealBackend = BuildConfig.USE_REAL_BACKEND
+        val backendUrl = BuildConfig.BACKEND_URL
+
+        val emailRepository = if (useRealBackend) {
             val api = NetworkClient.create(
-                baseUrl = BACKEND_URL,
+                baseUrl = backendUrl,
                 tokenManager = tokenManager,
                 debug = true,
             )
             authRepository = AuthRepository(api, tokenManager)
             GmailRepository(api)
         } else {
-            // Phase 1: use mock data so the UI works without a running backend
             authRepository = AuthRepository(
-                api = NetworkClient.create(BACKEND_URL, tokenManager),
+                api = NetworkClient.create(backendUrl, tokenManager),
                 tokenManager = tokenManager,
             )
             MockEmailRepository()
@@ -102,12 +104,21 @@ class MainActivity : ComponentActivity() {
                     isLoggedIn = authRepository.isLoggedIn
                 }
 
-                if (USE_REAL_BACKEND && !isLoggedIn) {
+                if (BuildConfig.USE_REAL_BACKEND && !isLoggedIn) {
                     SignInScreen(
                         authRepository = authRepository,
+                        authError = authErrorState,
                         onSignedIn = { isLoggedIn = true },
                     )
                 } else {
+                    if (BuildConfig.USE_REAL_BACKEND && isLoggedIn) {
+                        val scope = rememberCoroutineScope()
+                        LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+                            scope.launch {
+                                refreshJwtIfNeeded(authRepository, tokenManager)
+                            }
+                        }
+                    }
                     XREmailApp(
                         viewModelFactory = EmailViewModel.Factory(emailRepository)
                     )
@@ -137,18 +148,32 @@ class MainActivity : ComponentActivity() {
 
         when (uri.path) {
             "/success" -> {
+                authErrorState.value = null
                 val state = authRepository.handleCallback(uri)
                 Log.i(TAG, "OAuth success — user: ${tokenManager.getUserEmail()}, state: $state")
             }
             "/error" -> {
                 val reason = uri.getQueryParameter("reason") ?: "unknown"
-                Log.e(TAG, "OAuth error: $reason")
+                val decoded = runCatching {
+                    URLDecoder.decode(reason, StandardCharsets.UTF_8.name())
+                }.getOrDefault(reason)
+                authErrorState.value = "Sign-in failed: $decoded"
+                Log.e(TAG, "OAuth error: $decoded")
             }
         }
     }
 
     companion object {
         private const val TAG = "XrMailAuth"
+    }
+}
+
+private suspend fun refreshJwtIfNeeded(authRepository: AuthRepository, tokenManager: TokenManager) {
+    val token = tokenManager.getToken() ?: return
+    val exp = JwtPayload.expiresAtEpochSeconds(token) ?: return
+    val now = System.currentTimeMillis() / 1000L
+    if (exp - now < 3600) {
+        authRepository.refreshToken()
     }
 }
 

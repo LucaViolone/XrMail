@@ -76,7 +76,7 @@ class VoiceCommandDispatcher(
             }
 
             EmailCommandTool.Command.ShowInbox -> {
-                viewModel.collapseToHud()
+                viewModel.expandToTriage()
             }
 
             EmailCommandTool.Command.GoBack -> {

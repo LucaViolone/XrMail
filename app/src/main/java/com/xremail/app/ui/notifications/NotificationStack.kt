@@ -70,7 +70,17 @@ fun NotificationBanner(
     modifier: Modifier = Modifier,
 ) {
     val unread = remember(emails) { emails.filter { !it.isRead } }
-    if (unread.isEmpty()) return
+
+    if (emails.isEmpty()) return
+
+    if (unread.isEmpty()) {
+        CaughtUpInboxBanner(
+            loadedCount = emails.size,
+            onOpenInbox = onExpand,
+            modifier = modifier,
+        )
+        return
+    }
 
     val hasHigh = unread.any { it.priority == Priority.HIGH }
 
@@ -195,6 +205,50 @@ fun NotificationBanner(
 }
 
 /**
+ * Shown when the inbox has messages but none are unread — the old UI hid the
+ * banner entirely (`if (unread.isEmpty()) return`), so users saw an empty HUD
+ * even though mail had loaded. Tap / gaze opens the stack tier.
+ */
+@Composable
+private fun CaughtUpInboxBanner(
+    loadedCount: Int,
+    onOpenInbox: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(XREmailColors.surfaceVariant.copy(alpha = 0.9f))
+            .clickable(onClick = onOpenInbox)
+            .padding(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            Icons.Default.Mail,
+            contentDescription = null,
+            tint = XREmailColors.primary,
+            modifier = Modifier.size(18.dp),
+        )
+        Spacer(Modifier.width(10.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "All caught up",
+                style = MaterialTheme.typography.labelMedium,
+                color = XREmailColors.onSurface,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = "$loadedCount in inbox · tap to open",
+                style = MaterialTheme.typography.labelSmall,
+                color = XREmailColors.onSurfaceVariant,
+                maxLines = 1,
+            )
+        }
+    }
+}
+
+/**
  * Expanded notification cards list — shown in the NOTIFICATION_CARDS tier.
  * Each card is swipeable for archive/snooze directly, or tappable to
  * open in Triage with that email pre-selected.
@@ -255,6 +309,35 @@ fun NotificationCardStack(
         }
 
         Spacer(Modifier.height(2.dp))
+
+        if (unread.isEmpty()) {
+            if (emails.isEmpty()) {
+                Text(
+                    text = "No messages loaded yet.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = XREmailColors.onSurfaceDim,
+                    modifier = Modifier.padding(vertical = 8.dp),
+                )
+            } else {
+                Text(
+                    text = "No unread — ${emails.size} in inbox",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = XREmailColors.onSurface,
+                    modifier = Modifier.padding(vertical = 4.dp),
+                )
+                Text(
+                    text = "Pinch to open full list",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = XREmailColors.primary,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .clickable(onClick = onExpandToTriage)
+                        .padding(vertical = 10.dp),
+                )
+            }
+        }
 
         val visible = unread.take(MAX_VISIBLE_CARDS)
         visible.forEachIndexed { index, email ->

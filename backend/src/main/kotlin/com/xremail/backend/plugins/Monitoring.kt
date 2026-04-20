@@ -25,7 +25,7 @@ fun Application.configureMonitoring() {
     install(StatusPages) {
         // Handle unhandled exceptions with a structured error body
         exception<Throwable> { call, cause ->
-            application.log.error("Unhandled exception on ${call.request.path()}", cause)
+            call.application.log.error("Unhandled exception on ${call.request.path()}", cause)
             call.respond(
                 HttpStatusCode.InternalServerError,
                 ErrorResponse(

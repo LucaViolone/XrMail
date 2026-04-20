@@ -1,8 +1,9 @@
 package com.xremail.backend.routes
 
 import com.xremail.backend.config.GoogleConfig
-import com.xremail.backend.models.AuthCallbackResponse
 import com.xremail.backend.models.AuthLoginResponse
+import com.xremail.backend.models.TokenRefreshDto
+import com.xremail.backend.models.ok
 import com.xremail.backend.services.GmailService
 import com.xremail.backend.services.TokenService
 import io.ktor.http.*
@@ -50,10 +51,12 @@ fun Route.authRoutes(
 
             call.respond(
                 HttpStatusCode.OK,
-                AuthLoginResponse(
-                    authorizationUrl = authUrl,
-                    message = "Open this URL in a browser to authorize XrMail"
-                )
+                ok(
+                    AuthLoginResponse(
+                        authorizationUrl = authUrl,
+                        message = "Open this URL in a browser to authorize XrMail",
+                    ),
+                ),
             )
         }
 
@@ -153,7 +156,7 @@ fun Route.authRoutes(
                 }
 
                 val newJwt = tokenService.generateJwt(userId = userId, email = email)
-                call.respond(HttpStatusCode.OK, mapOf("token" to newJwt))
+                call.respond(HttpStatusCode.OK, ok(TokenRefreshDto(token = newJwt)))
             }
 
             /**
@@ -173,7 +176,7 @@ fun Route.authRoutes(
 
                 runCatching { gmailService.revokeTokens(userId) }
 
-                call.respond(HttpStatusCode.OK, mapOf("message" to "Successfully signed out"))
+                call.respond(HttpStatusCode.OK, ok(mapOf("success" to true)))
             }
         }
     }

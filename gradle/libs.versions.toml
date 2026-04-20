@@ -95,6 +95,7 @@ java-jwt = { group = "com.auth0", name = "java-jwt", version.ref = "jwtAuth" }
 exposed-core = { group = "org.jetbrains.exposed", name = "exposed-core", version.ref = "exposed" }
 exposed-dao = { group = "org.jetbrains.exposed", name = "exposed-dao", version.ref = "exposed" }
 exposed-jdbc = { group = "org.jetbrains.exposed", name = "exposed-jdbc", version.ref = "exposed" }
+exposed-java-time = { group = "org.jetbrains.exposed", name = "exposed-java-time", version.ref = "exposed" }
 h2-database = { group = "com.h2database", name = "h2", version.ref = "h2" }
 java-mail = { group = "com.sun.mail", name = "javax.mail", version.ref = "javaMail" }
 
