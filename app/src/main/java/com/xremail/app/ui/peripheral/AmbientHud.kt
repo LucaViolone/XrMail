@@ -36,7 +36,7 @@ import com.xremail.app.data.Email
 import com.xremail.app.ui.notifications.NotificationBanner
 import com.xremail.app.ui.theme.XREmailColors
 import com.xremail.app.viewmodel.ToastMessage
-import com.xremail.app.voice.GeminiLiveManager
+import com.xremail.app.voice.PushToTalkSession
 import com.xremail.app.voice.TTSManager
 import kotlinx.coroutines.delay
 
@@ -57,7 +57,7 @@ fun AmbientHud(
     emails: List<Email>,
     ttsState: TTSManager.PlaybackState,
     ttsProgress: Float,
-    voiceState: GeminiLiveManager.SessionState,
+    voiceState: PushToTalkSession.State,
     toastMessage: ToastMessage?,
     onExpandToNotifications: () -> Unit,
     onDismissToast: () -> Unit,
@@ -101,11 +101,12 @@ fun AmbientHud(
 
 @Composable
 fun VoiceStatusIndicator(
-    voiceState: GeminiLiveManager.SessionState,
+    voiceState: PushToTalkSession.State,
     modifier: Modifier = Modifier,
 ) {
-    val isActive = voiceState == GeminiLiveManager.SessionState.LISTENING
-    val isProcessing = voiceState == GeminiLiveManager.SessionState.CONNECTING
+    val isActive = voiceState == PushToTalkSession.State.LISTENING ||
+        voiceState == PushToTalkSession.State.SPEAKING
+    val isProcessing = voiceState == PushToTalkSession.State.THINKING
 
     if (!isActive && !isProcessing) return
 

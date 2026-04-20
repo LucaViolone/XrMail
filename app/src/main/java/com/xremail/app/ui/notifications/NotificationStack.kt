@@ -60,25 +60,21 @@ private const val MAX_VISIBLE_CARDS = 5
 /**
  * iPhone-style notification banner for the Ambient HUD.
  * Shows the unread count pill alongside a rotating preview of the
- * latest sender + AI summary. EXPANSION REQUIRES A DELIBERATE
- * PINCH-HOLD GESTURE (≥550 ms) — the banner is intentionally NOT a
- * gaze+pinch click target because it's the only thing visible and
- * accidentally satisfying gaze + any pinch was firing constant
- * unintentional tier transitions. The user surfaces the actual
- * expansion path via "Pinch + hold to expand" hint below the banner
- * (rendered by InteractionTierRouter.MainPanelPlaceholder).
+ * latest sender + AI summary. A direct OS gaze+pinch click on the
+ * banner expands AMBIENT_HUD → NOTIFICATION_CARDS (the "tap to
+ * expand" phone metaphor). The hands-free path is still the 550ms
+ * PINCH_HOLD_EXPAND gesture, whose progress is now surfaced by the
+ * ExpandAffordance ring in the peripheral HUD so holds are visible
+ * even though clicks are invisible single-frame events.
  *
  * Visually similar to iOS lock screen banners — rounded pill with
  * avatar, sender, and one-line preview. Pulses gently when HIGH
  * priority emails are present.
- *
- * `onExpand` is retained in the signature so we don't churn the
- * call sites, but it's intentionally never invoked from this widget.
  */
 @Composable
 fun NotificationBanner(
     emails: List<Email>,
-    @Suppress("UNUSED_PARAMETER") onExpand: () -> Unit,
+    onExpand: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val unread = remember(emails) { emails.filter { !it.isRead } }
@@ -120,22 +116,19 @@ fun NotificationBanner(
         Priority.IGNORE -> XREmailColors.onSurfaceDim
     }
 
-    // INTENTIONALLY NOT .clickable here. The banner is the ONLY thing
-    // visible in AMBIENT_HUD, so the user's gaze naturally rests on it —
-    // every accidental primary-hand pinch (rummaging in a pocket, walking
-    // with arms swinging, picking something up) was firing the OS gaze+pinch
-    // click pipeline and expanding the HUD without the user touching
-    // anything intentional. The 550 ms PINCH_HOLD_EXPAND gesture handled
-    // by SecondaryHandGestures (and surfaced in the "Pinch + hold to
-    // expand" hint below the banner) is the only expansion path now,
-    // because it requires deliberate intent (a genuine 550 ms hold is
-    // never produced by incidental hand activity).
+    // Click-to-expand: a direct OS gaze+pinch on the banner expands
+    // the HUD into the full notification card stack. Incidental pinch
+    // protection lives in SecondaryHandGestures (sub-80ms ghost-pinch
+    // filtering, fist-trending suppression) — the banner itself being
+    // clickable is what makes "tap the notification to see more" feel
+    // like a phone, which was the user direction.
     Row(
         modifier = modifier
             .fillMaxWidth()
             .scale(pulseScale)
             .clip(RoundedCornerShape(16.dp))
             .background(XREmailColors.surfaceVariant.copy(alpha = 0.9f))
+            .clickable(onClick = onExpand)
             .padding(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

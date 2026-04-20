@@ -189,6 +189,23 @@ class SecondaryHandGestures {
     private val _closedFistProgress = MutableStateFlow(0f)
     val closedFistProgress: StateFlow<Float> = _closedFistProgress.asStateFlow()
 
+    /**
+     * Live progress of the pinch "expand" hold, 0f → 1f. Mirrors
+     * [closedFistProgress] but for the expansion gesture — 0f when
+     * there is no active pinch, ramps up while the user holds thumb
+     * and index in contact, snaps to 1f the frame PINCH_HOLD_EXPAND
+     * fires, and drops back to 0f when the pinch releases.
+     *
+     * The expand path also supports a quick tap-style select
+     * (PINCH_SELECT) which is single-frame and not visualized; this
+     * progress flow only covers the HOLD path because that's the
+     * one with ambiguous duration where visible feedback helps
+     * ("am I holding long enough yet?"). Quick pinches don't need
+     * the ring because they resolve instantly.
+     */
+    private val _pinchHoldProgress = MutableStateFlow(0f)
+    val pinchHoldProgress: StateFlow<Float> = _pinchHoldProgress.asStateFlow()
+
     private var trackingJobs: List<Job> = emptyList()
     private val handStates = mutableMapOf<String, HandState>()
 
@@ -278,6 +295,7 @@ class SecondaryHandGestures {
         handStates.values.forEach { it.reset() }
         handStates.clear()
         _closedFistProgress.value = 0f
+        _pinchHoldProgress.value = 0f
     }
 
     /**
@@ -335,25 +353,76 @@ class SecondaryHandGestures {
         val palm = handState.handJoints[HandJointType.HAND_JOINT_TYPE_PALM] ?: return
 
         val pinchDistance = Vector3.distance(thumbTip.translation, indexTip.translation)
+        val thumbTipDistFromPalm = Vector3.distance(thumbTip.translation, palm.translation)
+        val indexTipDistFromPalm = Vector3.distance(indexTip.translation, palm.translation)
+        val middleTipDistFromPalm = Vector3.distance(middleTip.translation, palm.translation)
+        val ringTipDistFromPalm = Vector3.distance(ringTip.translation, palm.translation)
+        val littleTipDistFromPalm = Vector3.distance(littleTip.translation, palm.translation)
 
-        detectPinch(pinchDistance, now, s)
-        // Closed-fist detection runs in parallel with pinch. A held pinch
-        // satisfies "thumb close to index" but NOT "all four fingers
-        // tucked AND thumb tucked", so the two gestures can't collide.
+        // Compute the fist gate ONCE and share it between pinch + fist
+        // detectors. The gate is intentionally strict (all four non-
+        // thumb fingertips folded AND the thumb tucked), with hysteresis
+        // once the user has committed — see the dedicated constants
+        // above. A deliberate pinch does NOT satisfy this gate (middle/
+        // ring/little stay clearly extended past the 4.5 cm fold
+        // threshold during any real pinch pose), so this is a precise
+        // "the hand is currently a fist" signal rather than the fuzzy
+        // "trending fist-ward" heuristic that killed pinch responsiveness.
+        val fistTrigger = indexTipDistFromPalm < CLOSED_FIST_FINGER_FOLD_MAX_M &&
+            middleTipDistFromPalm < CLOSED_FIST_FINGER_FOLD_MAX_M &&
+            ringTipDistFromPalm < CLOSED_FIST_FINGER_FOLD_MAX_M &&
+            littleTipDistFromPalm < CLOSED_FIST_FINGER_FOLD_MAX_M &&
+            thumbTipDistFromPalm < CLOSED_FIST_THUMB_FOLD_MAX_M
+        val fistMaintain = indexTipDistFromPalm < CLOSED_FIST_MAINTAIN_FINGER_MAX_M &&
+            middleTipDistFromPalm < CLOSED_FIST_MAINTAIN_FINGER_MAX_M &&
+            ringTipDistFromPalm < CLOSED_FIST_MAINTAIN_FINGER_MAX_M &&
+            littleTipDistFromPalm < CLOSED_FIST_MAINTAIN_FINGER_MAX_M &&
+            thumbTipDistFromPalm < CLOSED_FIST_MAINTAIN_THUMB_MAX_M
+        val fistNow = if (s.wasClosedFist) fistMaintain else fistTrigger
+
+        // Pinch is only suppressed when the hand is CURRENTLY in a fist
+        // pose. This is the gestural inverse of the pinch — if the user
+        // committed to a fist, any pinch state mid-curl was transitional
+        // not intentional, and we cancel it so the fist-then-release
+        // doesn't fire a stale PINCH_SELECT that would expand the tier
+        // right after CLOSED_FIST_HOLD_COLLAPSE collapses it.
+        detectPinch(pinchDistance, suppressPinch = fistNow, now = now, s = s)
+        // Closed-fist detection runs in parallel with pinch using the
+        // same fistNow signal. The two gestures can't collide because a
+        // held pinch satisfies "thumb close to index" but NOT "all four
+        // fingers tucked AND thumb tucked".
         detectClosedFistHold(
-            thumbTipDistFromPalm = Vector3.distance(thumbTip.translation, palm.translation),
-            indexTipDistFromPalm = Vector3.distance(indexTip.translation, palm.translation),
-            middleTipDistFromPalm = Vector3.distance(middleTip.translation, palm.translation),
-            ringTipDistFromPalm = Vector3.distance(ringTip.translation, palm.translation),
-            littleTipDistFromPalm = Vector3.distance(littleTip.translation, palm.translation),
+            fistTrigger = fistTrigger,
+            fistNow = fistNow,
+            thumbTipDistFromPalm = thumbTipDistFromPalm,
+            indexTipDistFromPalm = indexTipDistFromPalm,
+            middleTipDistFromPalm = middleTipDistFromPalm,
+            ringTipDistFromPalm = ringTipDistFromPalm,
+            littleTipDistFromPalm = littleTipDistFromPalm,
             now = now,
             s = s,
         )
         trackPalmForSwipe(palm.translation, now, s)
     }
 
-    private fun detectPinch(distance: Float, now: Long, s: HandState) {
+    private fun detectPinch(distance: Float, suppressPinch: Boolean, now: Long, s: HandState) {
         val wasPinching = s.isPinching
+        // Suppress pinch only when the hand is ACTUALLY a fist right now
+        // (precise gate computed in processHandState, not the old fuzzy
+        // "any finger close to palm" heuristic that false-fired on
+        // normal pinches). Cancelling any in-flight pinch state here
+        // stops the fist-then-release sequence from firing a stale
+        // PINCH_SELECT on opening the hand after CLOSED_FIST_HOLD_COLLAPSE.
+        if (suppressPinch) {
+            if (wasPinching) {
+                XrLog.v(TAG, "${s.label} pinch CANCELLED (hand became fist)")
+            }
+            s.isPinching = false
+            s.pinchStartTimeMs = 0L
+            s.pinchEmitted = false
+            if (_pinchHoldProgress.value != 0f) _pinchHoldProgress.value = 0f
+            return
+        }
         s.isPinching = distance < PINCH_DISTANCE_THRESHOLD
 
         if (s.isPinching && !wasPinching) {
@@ -364,24 +433,35 @@ class SecondaryHandGestures {
 
         if (s.isPinching && !s.pinchEmitted) {
             val holdDuration = now - s.pinchStartTimeMs
+            // Drive the expand-affordance ring. Raw linear 0f → 1f over
+            // PINCH_HOLD_DURATION_MS — the ring composable smooths this
+            // with animateFloatAsState so we don't need to here.
+            _pinchHoldProgress.value =
+                (holdDuration.toFloat() / PINCH_HOLD_DURATION_MS).coerceIn(0f, 1f)
             if (holdDuration >= PINCH_HOLD_DURATION_MS) {
                 XrLog.d(TAG, "${s.label} pinch HOLD ${holdDuration}ms -> PINCH_HOLD_EXPAND")
+                _pinchHoldProgress.value = 1f
                 emit(Gesture.PINCH_HOLD_EXPAND, s)
                 s.pinchEmitted = true
             }
         }
 
-        if (!s.isPinching && wasPinching && !s.pinchEmitted) {
+        if (!s.isPinching && wasPinching) {
             val held = now - s.pinchStartTimeMs
-            if (held < PINCH_TAP_MIN_HOLD_MS) {
-                // Filter sub-80ms "ghost pinches" — these are tracking
-                // jitter, not user intent. The user reported the HUD
-                // "expanding without me doing a gesture" and these
-                // single-frame pinch flickers were the cause.
-                XrLog.v(TAG, "${s.label} pinch RELEASE held=${held}ms -> SUPPRESSED (below tap min)")
-            } else {
-                XrLog.d(TAG, "${s.label} pinch RELEASE held=${held}ms -> PINCH_SELECT")
-                emit(Gesture.PINCH_SELECT, s)
+            // Ring drops whether this ended as an emit or a sub-tap
+            // suppression — the pinch is over either way.
+            if (_pinchHoldProgress.value != 0f) _pinchHoldProgress.value = 0f
+            if (!s.pinchEmitted) {
+                if (held < PINCH_TAP_MIN_HOLD_MS) {
+                    // Filter sub-80ms "ghost pinches" — these are tracking
+                    // jitter, not user intent. The user reported the HUD
+                    // "expanding without me doing a gesture" and these
+                    // single-frame pinch flickers were the cause.
+                    XrLog.v(TAG, "${s.label} pinch RELEASE held=${held}ms -> SUPPRESSED (below tap min)")
+                } else {
+                    XrLog.d(TAG, "${s.label} pinch RELEASE held=${held}ms -> PINCH_SELECT")
+                    emit(Gesture.PINCH_SELECT, s)
+                }
             }
         }
     }
@@ -402,6 +482,8 @@ class SecondaryHandGestures {
      * accidentally.
      */
     private fun detectClosedFistHold(
+        fistTrigger: Boolean,
+        fistNow: Boolean,
         thumbTipDistFromPalm: Float,
         indexTipDistFromPalm: Float,
         middleTipDistFromPalm: Float,
@@ -410,36 +492,6 @@ class SecondaryHandGestures {
         now: Long,
         s: HandState,
     ) {
-        val allFingersFolded =
-            indexTipDistFromPalm < CLOSED_FIST_FINGER_FOLD_MAX_M &&
-                middleTipDistFromPalm < CLOSED_FIST_FINGER_FOLD_MAX_M &&
-                ringTipDistFromPalm < CLOSED_FIST_FINGER_FOLD_MAX_M &&
-                littleTipDistFromPalm < CLOSED_FIST_FINGER_FOLD_MAX_M
-        // Thumb-tucked check separates a real fist (thumb wraps over the
-        // curled fingers, ending up close to the palm) from a relaxed
-        // hand (thumb extended off to the side). A relaxed hand can have
-        // loosely-curled fingers but the thumb is almost always >5cm
-        // from the palm, so this gate alone kills most false positives.
-        val thumbTucked = thumbTipDistFromPalm < CLOSED_FIST_THUMB_FOLD_MAX_M
-        val fistTrigger = allFingersFolded && thumbTucked
-        // Hysteresis: if the user has ALREADY entered the fist pose,
-        // accept a slightly-looser shape while they hold. Tracking
-        // jitter on Galaxy XR routinely kicks one fingertip 0.5-1cm
-        // past the trigger threshold on a held fist; without this, the
-        // timer resets every few frames and the 600ms hold never
-        // completes — directly observed as "gesture is super delayed".
-        val fingersMaintained =
-            indexTipDistFromPalm < CLOSED_FIST_MAINTAIN_FINGER_MAX_M &&
-                middleTipDistFromPalm < CLOSED_FIST_MAINTAIN_FINGER_MAX_M &&
-                ringTipDistFromPalm < CLOSED_FIST_MAINTAIN_FINGER_MAX_M &&
-                littleTipDistFromPalm < CLOSED_FIST_MAINTAIN_FINGER_MAX_M
-        val thumbMaintained = thumbTipDistFromPalm < CLOSED_FIST_MAINTAIN_THUMB_MAX_M
-        val fistMaintain = fingersMaintained && thumbMaintained
-        // fistNow = "hand currently counts as a fist for the purposes of
-        // the timer". If we've already started one, use the maintain
-        // envelope; otherwise require the strict trigger envelope.
-        val fistNow = if (s.wasClosedFist) fistMaintain else fistTrigger
-
         // DIAGNOSTIC: when the hand is close to fist-shape but doesn't
         // quite satisfy both gates, log the joint distances every ~500ms
         // so we can SEE on the wire how close the user's gesture is to
@@ -455,17 +507,15 @@ class SecondaryHandGestures {
         )
         val nearFist = maxFingerDist < CLOSED_FIST_FINGER_FOLD_MAX_M * 1.5f &&
             thumbTipDistFromPalm < CLOSED_FIST_THUMB_FOLD_MAX_M * 1.5f
-        if (!fistNow && nearFist && now - s.lastFistDiagLogMs > 500L) {
+        if (!fistTrigger && nearFist && now - s.lastFistDiagLogMs > 500L) {
             s.lastFistDiagLogMs = now
             XrLog.v(
                 TAG,
                 "${s.label} near-fist (NOT firing) " +
                     "fingers=${"%.3f".format(maxFingerDist)}m " +
-                    "(need <${CLOSED_FIST_FINGER_FOLD_MAX_M}m, " +
-                    "fingersOk=$allFingersFolded) " +
+                    "(need <${CLOSED_FIST_FINGER_FOLD_MAX_M}m) " +
                     "thumb=${"%.3f".format(thumbTipDistFromPalm)}m " +
-                    "(need <${CLOSED_FIST_THUMB_FOLD_MAX_M}m, " +
-                    "thumbOk=$thumbTucked)",
+                    "(need <${CLOSED_FIST_THUMB_FOLD_MAX_M}m)",
             )
         }
 

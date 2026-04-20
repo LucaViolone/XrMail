@@ -49,6 +49,7 @@ import com.xremail.app.tracking.SecondaryHandGestures
 import com.xremail.app.ui.notifications.NotificationCardStack
 import com.xremail.app.ui.peripheral.AmbientHud
 import com.xremail.app.ui.peripheral.CollapseAffordance
+import com.xremail.app.ui.peripheral.ExpandAffordance
 import com.xremail.app.ui.peripheral.ToastOverlay
 import com.xremail.app.ui.peripheral.InboxPanel
 import com.xremail.app.ui.peripheral.VoiceComposeOverlay
@@ -58,8 +59,7 @@ import com.xremail.app.util.XrLog
 import com.xremail.app.viewmodel.EmailUiState
 import com.xremail.app.viewmodel.InteractionTier
 import com.xremail.app.viewmodel.VoiceDraft
-import com.xremail.app.voice.GeminiLiveManager
-import com.xremail.app.voice.LocalCommandRecognizer
+import com.xremail.app.voice.PushToTalkSession
 import com.xremail.app.voice.TTSManager
 import com.xremail.app.voice.VoiceComposeManager
 
@@ -115,9 +115,7 @@ fun InteractionTierRouter(
     ttsState: TTSManager.PlaybackState,
     ttsProgress: Float,
     tiltScrollDelta: Float,
-    voiceSessionState: GeminiLiveManager.SessionState,
-    localRecognizerState: LocalCommandRecognizer.State =
-        LocalCommandRecognizer.State.IDLE,
+    pttState: PushToTalkSession.State,
     voiceComposeState: VoiceComposeManager.ComposeState,
     voiceDraft: VoiceDraft?,
     handGestures: SecondaryHandGestures? = null,
@@ -142,7 +140,7 @@ fun InteractionTierRouter(
     onSend: () -> Unit,
     onCancelCompose: () -> Unit,
     onDismissToast: () -> Unit,
-    onSummonGemini: () -> Unit = {},
+    onToggleVoice: () -> Unit = {},
     /** Fires a simulated voice reply — shown as "Voice" button in the Focus action bar. */
     onVoiceReply: (() -> Unit)? = null,
     onConfirmVoiceSend: (() -> Unit)? = null,
@@ -161,6 +159,14 @@ fun InteractionTierRouter(
     // Drives the CollapseAffordance ring so users see real-time feedback
     // as they perform the gesture (and can release to cancel mid-hold).
     val closedFistProgress by (handGestures?.closedFistProgress
+        ?: kotlinx.coroutines.flow.MutableStateFlow(0f)).collectAsState()
+    // Live 0f→1f progress of the user's pinch "expand" hold. Drives the
+    // ExpandAffordance ring in AMBIENT_HUD and NOTIFICATION_CARDS so a
+    // 550ms hold is VISIBLE as it ramps — parity with the collapse ring.
+    // A quick pinch-tap (PINCH_SELECT) bypasses this entirely because
+    // it resolves in a single frame and the tier transition itself is
+    // the feedback.
+    val pinchHoldProgress by (handGestures?.pinchHoldProgress
         ?: kotlinx.coroutines.flow.MutableStateFlow(0f)).collectAsState()
 
     LaunchedEffect(uiState.tier, canUsePeripheral) {
@@ -183,9 +189,8 @@ fun InteractionTierRouter(
     ) {
         if (canUsePeripheral) {
             MainPanelPlaceholder(
-                voiceSessionState = voiceSessionState,
-                localRecognizerState = localRecognizerState,
-                onSummonGemini = onSummonGemini,
+                pttState = pttState,
+                onToggleVoice = onToggleVoice,
             )
         } else {
             // Emulator / no headset: render the active tier here so dev
@@ -196,11 +201,11 @@ fun InteractionTierRouter(
                 ttsState = ttsState,
                 ttsProgress = ttsProgress,
                 tiltScrollDelta = tiltScrollDelta,
-                voiceSessionState = voiceSessionState,
-                localRecognizerState = localRecognizerState,
+                pttState = pttState,
                 voiceComposeState = voiceComposeState,
                 voiceDraft = voiceDraft,
                 closedFistProgress = closedFistProgress,
+                pinchHoldProgress = pinchHoldProgress,
                 onExpandToNotifications = onExpandToNotifications,
                 onCollapseFromNotifications = onCollapseFromNotifications,
                 onExpandToInbox = onExpandToInbox,
@@ -211,7 +216,7 @@ fun InteractionTierRouter(
                 onArchiveEmail = onArchiveEmail,
                 onSnoozeEmail = onSnoozeEmail,
                 onDismissToast = onDismissToast,
-                onSummonGemini = onSummonGemini,
+                onToggleVoice = onToggleVoice,
             )
         }
     }
@@ -299,15 +304,17 @@ fun InteractionTierRouter(
             // inter-row spacing, no footer hints row).
             val visibleNotifCards = uiState.unreadCount.coerceAtMost(5)
             val panelHeight = when (uiState.tier) {
-                // AMBIENT_HUD now contains: voice prompt row (~28dp) +
-                // optional voice mic indicator (collapsed when idle) +
+                // AMBIENT_HUD now contains: voice prompt + expand-
+                // affordance row (~34dp — the ExpandAffordance pill is
+                // the tallest row element at ~34dp) + 6dp spacing +
                 // notification banner (~52dp content) + outer 8dp×2
-                // padding. Removed the "Pinch + hold to expand" footer
-                // text (~24dp) and the AmbientHud's nested Surface
-                // (~32dp of inner padding) on 2026-04-19 per user
-                // feedback that the ambient panel had "a ton of extra
-                // space around the notification".
-                InteractionTier.AMBIENT_HUD -> 110.dp
+                // padding. Bumped from 110dp → 120dp when the expand
+                // ring was added — without the bump the pill clips
+                // the bottom of the banner by ~4dp. The "Pinch + hold
+                // to expand" footer text was deleted separately; the
+                // expand ring replaces it and sits inline in the top
+                // row instead of taking a dedicated line below.
+                InteractionTier.AMBIENT_HUD -> 120.dp
                 InteractionTier.NOTIFICATION_CARDS -> {
                     if (visibleNotifCards == 0) {
                         // Just the inbox-zero pill + collapse affordance
@@ -363,11 +370,11 @@ fun InteractionTierRouter(
                             ttsState = ttsState,
                             ttsProgress = ttsProgress,
                             tiltScrollDelta = tiltScrollDelta,
-                            voiceSessionState = voiceSessionState,
-                            localRecognizerState = localRecognizerState,
+                            pttState = pttState,
                             voiceComposeState = voiceComposeState,
                             voiceDraft = voiceDraft,
                             closedFistProgress = closedFistProgress,
+                            pinchHoldProgress = pinchHoldProgress,
                             onExpandToNotifications = onExpandToNotifications,
                             onCollapseFromNotifications = onCollapseFromNotifications,
                             onExpandToInbox = onExpandToInbox,
@@ -378,7 +385,7 @@ fun InteractionTierRouter(
                             onArchiveEmail = onArchiveEmail,
                             onSnoozeEmail = onSnoozeEmail,
                             onDismissToast = onDismissToast,
-                            onSummonGemini = onSummonGemini,
+                            onToggleVoice = onToggleVoice,
                         )
                     }
                 }
@@ -426,9 +433,8 @@ fun InteractionTierRouter(
 
 @Composable
 private fun MainPanelPlaceholder(
-    voiceSessionState: GeminiLiveManager.SessionState,
-    localRecognizerState: LocalCommandRecognizer.State,
-    onSummonGemini: () -> Unit = {},
+    pttState: PushToTalkSession.State,
+    onToggleVoice: () -> Unit = {},
 ) {
     Box(
         modifier = Modifier.fillMaxSize().padding(32.dp),
@@ -452,9 +458,8 @@ private fun MainPanelPlaceholder(
                 color = XREmailColors.onSurfaceDim,
             )
             VoicePrompt(
-                voiceState = voiceSessionState,
-                localState = localRecognizerState,
-                onSummonGemini = onSummonGemini,
+                state = pttState,
+                onToggle = onToggleVoice,
             )
         }
     }
@@ -473,11 +478,11 @@ private fun PeripheralTierContent(
     ttsState: TTSManager.PlaybackState,
     ttsProgress: Float,
     tiltScrollDelta: Float,
-    voiceSessionState: GeminiLiveManager.SessionState,
-    localRecognizerState: LocalCommandRecognizer.State,
+    pttState: PushToTalkSession.State,
     @Suppress("UNUSED_PARAMETER") voiceComposeState: VoiceComposeManager.ComposeState,
     voiceDraft: VoiceDraft?,
     closedFistProgress: Float,
+    pinchHoldProgress: Float,
     onExpandToNotifications: () -> Unit,
     onCollapseFromNotifications: () -> Unit,
     onExpandToInbox: () -> Unit,
@@ -488,7 +493,7 @@ private fun PeripheralTierContent(
     onArchiveEmail: (Email) -> Unit,
     onSnoozeEmail: (Email) -> Unit,
     onDismissToast: () -> Unit,
-    onSummonGemini: () -> Unit = {},
+    onToggleVoice: () -> Unit = {},
 ) {
     // AMBIENT_HUD wants tight padding (the whole point of the tier is
     // to be the smallest possible peripheral footprint); deeper tiers
@@ -506,12 +511,31 @@ private fun PeripheralTierContent(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             VoicePrompt(
-                voiceState = voiceSessionState,
-                localState = localRecognizerState,
+                state = pttState,
+                onToggle = onToggleVoice,
                 compact = true,
-                onSummonGemini = onSummonGemini,
                 modifier = Modifier.weight(1f, fill = false),
             )
+            // Expand affordance — only where expansion is a meaningful
+            // gesture-path (AMBIENT_HUD → cards, cards → INBOX). INBOX
+            // → FOCUS is a direct pinch on a row, not a hold, so no
+            // ring there. FOCUS is the top of the hierarchy. Ring
+            // fills 0→1 as the user holds a pinch so a quick
+            // PINCH_SELECT doesn't need the affordance but the
+            // holding path gets visible "you're doing a thing"
+            // confirmation identical to the collapse ring.
+            if (tier == InteractionTier.AMBIENT_HUD ||
+                tier == InteractionTier.NOTIFICATION_CARDS
+            ) {
+                ExpandAffordance(
+                    progress = pinchHoldProgress,
+                    label = when (tier) {
+                        InteractionTier.AMBIENT_HUD -> "Pinch to expand"
+                        InteractionTier.NOTIFICATION_CARDS -> "Pinch + hold for inbox"
+                        else -> "Pinch + hold to expand"
+                    },
+                )
+            }
             // Visible collapse affordance — only when there's somewhere
             // to collapse to. AMBIENT_HUD is the floor of the tier
             // hierarchy so it doesn't get one (closed-fist there is a
@@ -541,7 +565,7 @@ private fun PeripheralTierContent(
                     emails = uiState.emails,
                     ttsState = ttsState,
                     ttsProgress = ttsProgress,
-                    voiceState = voiceSessionState,
+                    voiceState = pttState,
                     toastMessage = uiState.toastMessage,
                     onExpandToNotifications = {
                         XrLog.tier(
@@ -642,11 +666,11 @@ private fun FallbackTierContent(
     ttsState: TTSManager.PlaybackState,
     ttsProgress: Float,
     tiltScrollDelta: Float,
-    voiceSessionState: GeminiLiveManager.SessionState,
-    localRecognizerState: LocalCommandRecognizer.State,
+    pttState: PushToTalkSession.State,
     voiceComposeState: VoiceComposeManager.ComposeState,
     voiceDraft: VoiceDraft?,
     closedFistProgress: Float,
+    pinchHoldProgress: Float,
     onExpandToNotifications: () -> Unit,
     onCollapseFromNotifications: () -> Unit,
     onExpandToInbox: () -> Unit,
@@ -657,7 +681,7 @@ private fun FallbackTierContent(
     onArchiveEmail: (Email) -> Unit,
     onSnoozeEmail: (Email) -> Unit,
     onDismissToast: () -> Unit,
-    onSummonGemini: () -> Unit = {},
+    onToggleVoice: () -> Unit = {},
 ) {
     Box(modifier = Modifier.fillMaxSize().padding(20.dp)) {
         Column(
@@ -680,10 +704,9 @@ private fun FallbackTierContent(
                     modifier = Modifier.fillMaxWidth().weight(1f),
                 )
                 VoicePrompt(
-                    voiceState = voiceSessionState,
-                    localState = localRecognizerState,
+                    state = pttState,
+                    onToggle = onToggleVoice,
                     compact = true,
-                    onSummonGemini = onSummonGemini,
                 )
             }
             PeripheralTierContent(
@@ -693,11 +716,11 @@ private fun FallbackTierContent(
                 ttsState = ttsState,
                 ttsProgress = ttsProgress,
                 tiltScrollDelta = tiltScrollDelta,
-                voiceSessionState = voiceSessionState,
-                localRecognizerState = localRecognizerState,
+                pttState = pttState,
                 voiceComposeState = voiceComposeState,
                 voiceDraft = voiceDraft,
                 closedFistProgress = closedFistProgress,
+                pinchHoldProgress = pinchHoldProgress,
                 onExpandToNotifications = onExpandToNotifications,
                 onCollapseFromNotifications = onCollapseFromNotifications,
                 onExpandToInbox = onExpandToInbox,
@@ -708,7 +731,7 @@ private fun FallbackTierContent(
                 onArchiveEmail = onArchiveEmail,
                 onSnoozeEmail = onSnoozeEmail,
                 onDismissToast = onDismissToast,
-                onSummonGemini = onSummonGemini,
+                onToggleVoice = onToggleVoice,
             )
         }
     }

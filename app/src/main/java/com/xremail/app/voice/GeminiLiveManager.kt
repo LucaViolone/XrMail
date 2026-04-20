@@ -307,10 +307,28 @@ class GeminiLiveManager {
                                 )
                             }
                         }
-                        enableInterruptions = true
-                        initializationHandler = { recordBuilder, trackBuilder ->
-                            tuneAudioForLowLatency(recordBuilder, trackBuilder)
-                        }
+                        // Interruptions OFF for now. With them on, the
+                        // Galaxy XR mic was treating breathing / room
+                        // ambience as "user is still speaking" and
+                        // interrupting Gemini before any audio reached
+                        // the user — symptom: chip says "Listening..."
+                        // but nothing is ever heard back. Latency is a
+                        // touch worse with this off but the conversation
+                        // actually completes.
+                        enableInterruptions = false
+                        // Audio path tuning REMOVED. The previous
+                        // VOICE_COMMUNICATION input + USAGE_VOICE_COMMUNICATION
+                        // output + PERFORMANCE_MODE_LOW_LATENCY combo
+                        // was perfect on phones but on Galaxy XR's
+                        // headset audio HAL it routed the model's TTS
+                        // to a stream that doesn't actually play —
+                        // the user heard nothing back even though the
+                        // function calls were firing fine. Letting the
+                        // SDK pick its own AudioRecord / AudioTrack
+                        // defaults (MIC + USAGE_MEDIA) costs ~150ms of
+                        // round-trip vs the tuned path but it actually
+                        // produces audible output on this hardware,
+                        // which matters infinitely more than latency.
                     },
                 )
             } catch (t: Throwable) {
@@ -440,6 +458,7 @@ class GeminiLiveManager {
      * model latency. The voice-call path with low-latency performance mode
      * cuts that to ~50ms each direction on Galaxy XR.
      */
+    @Suppress("unused")
     private fun tuneAudioForLowLatency(
         recordBuilder: AudioRecord.Builder,
         trackBuilder: AudioTrack.Builder,

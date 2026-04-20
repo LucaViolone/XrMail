@@ -20,8 +20,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -29,10 +32,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.xr.compose.platform.LocalSession
 import androidx.xr.runtime.DeviceTrackingMode
 import androidx.xr.runtime.SessionConfigureSuccess
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.launch
 import com.xremail.app.backend.service.AuthRepository
 import com.xremail.app.backend.service.NetworkClient
 import com.xremail.app.backend.service.TokenManager
@@ -45,6 +46,7 @@ import com.xremail.app.tracking.SecondaryHandGestures
 import com.xremail.app.tracking.TiltScrollController
 import com.xremail.app.tracking.XrSessionManager
 import com.xremail.app.util.XrLog
+import com.xremail.app.ui.auth.SignInScreen
 import com.xremail.app.ui.spatial.DisplayMode
 import com.xremail.app.ui.spatial.DisplayModeRouter
 import com.xremail.app.ui.feedback.GestureFeedbackOverlay
@@ -53,20 +55,49 @@ import com.xremail.app.ui.spatial.InteractionTierRouter
 import com.xremail.app.ui.theme.XREmailTheme
 import com.xremail.app.viewmodel.EmailViewModel
 import com.xremail.app.viewmodel.InteractionTier
-import com.xremail.app.voice.GeminiLiveManager
 import com.xremail.app.voice.GeminiTextService
+import com.xremail.app.voice.PushToTalkSession
 import com.xremail.app.voice.TTSManager
 import com.xremail.app.voice.VoiceCommandDispatcher
 import com.xremail.app.voice.VoiceComposeManager
-import com.xremail.app.voice.LocalCommandRecognizer
 
 class MainActivity : ComponentActivity() {
 
     // ---------------------------------------------------------------------------
-    // Backend wiring — swap USE_REAL_BACKEND to true once the server is running
+    // Backend wiring.
+    //
+    // USE_REAL_BACKEND = true gates the SignInScreen AND makes the app use the
+    // real `GmailRepository` (backed by the Ktor server on BACKEND_URL) instead
+    // of `MockEmailRepository`. Voice commands ("archive this", "send draft",
+    // etc.) operate on real Gmail messages instead of mock data.
+    //
+    // Gemini voice connectivity itself is independent — GeminiLiveManager and
+    // GeminiTextService speak to Firebase AI Logic directly, not to this
+    // backend. Sign-in affects WHICH EMAILS voice operates on, not whether
+    // Gemini connects.
+    //
+    // Running checklist before flipping this on:
+    //   1. `cd backend && ./gradlew run` (listens on localhost:8080)
+    //   2. `backend/.env` has GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET from
+    //      Google Cloud Console (Gmail API enabled, OAuth consent screen
+    //      configured, redirect URI http://localhost:8080/auth/callback and
+    //      xrmail://auth/success whitelisted).
+    //   3. Emulator → BACKEND_URL = "http://10.0.2.2:8080/" (host loopback).
+    //      Device → use your dev machine's LAN IP.
+    //
+    // If the backend isn't reachable the SignInScreen button's coroutine
+    // fails silently via AuthRepository's runCatching — the spinner just
+    // stops. You can still develop UI against the mock repo by flipping
+    // this back to false.
     // ---------------------------------------------------------------------------
 
-    private val USE_REAL_BACKEND = false
+    // USE_REAL_BACKEND = true shows SignInScreen on cold start. The screen
+    // has a "Sign in with Google" button (real OAuth round-trip through the
+    // Ktor backend) and a "Use mock data" button (skips auth, swaps in
+    // MockEmailRepository at runtime). While the teammate is still ironing
+    // out the xrmail://auth/success deep-link redirect, the mock button
+    // lets UI work continue without flipping this constant every time.
+    private val USE_REAL_BACKEND = true
     private val BACKEND_URL = "http://10.0.2.2:8080/" // emulator → host loopback
 
     private lateinit var tokenManager: TokenManager
@@ -115,28 +146,66 @@ class MainActivity : ComponentActivity() {
 
         tokenManager = TokenManager(applicationContext)
 
-        val emailRepository = if (USE_REAL_BACKEND) {
-            val api = NetworkClient.create(
-                baseUrl = BACKEND_URL,
-                tokenManager = tokenManager,
-                debug = true,
-            )
-            authRepository = AuthRepository(api, tokenManager)
-            GmailRepository(api)
-        } else {
-            // Phase 1: use mock data so the UI works without a running backend
-            authRepository = AuthRepository(
-                api = NetworkClient.create(BACKEND_URL, tokenManager),
-                tokenManager = tokenManager,
-            )
-            MockEmailRepository()
-        }
+        // Build BOTH repositories up front so the SignInScreen's "Use mock
+        // data" button can swap at runtime without restarting the activity.
+        // GmailRepository is a thin Retrofit wrapper — constructing it
+        // without a JWT is cheap; it only makes network calls if you
+        // actually hit it signed-out, and in that case AuthInterceptor
+        // sends unauthenticated requests which the backend rejects
+        // cleanly. The repository the ViewModel sees is chosen in
+        // composition below based on login state + mock override.
+        val api = NetworkClient.create(
+            baseUrl = BACKEND_URL,
+            tokenManager = tokenManager,
+            debug = true,
+        )
+        authRepository = AuthRepository(api, tokenManager)
+        val realRepository = GmailRepository(api)
+        val mockRepository = MockEmailRepository()
 
         setContent {
             XREmailTheme {
-                XREmailApp(
-                    viewModelFactory = EmailViewModel.Factory(emailRepository)
-                )
+                // Reactively track login state so the UI swaps from
+                // SignInScreen -> XREmailApp the moment the OAuth deep link
+                // fires. The Ktor backend redirects to xrmail://auth/success
+                // which calls handleOAuthIntent() -> onNewIntent -> onResume,
+                // and the LifecycleEventEffect below re-reads isLoggedIn.
+                // Using rememberSaveable so a config change (rotation, XR
+                // orientation lock toggle) doesn't bounce us back to the
+                // sign-in screen after we already have a token.
+                var isLoggedIn by rememberSaveable {
+                    mutableStateOf(authRepository.isLoggedIn)
+                }
+                // Runtime override: "Use mock data" on the sign-in screen
+                // sets this to true, which skips auth and routes the
+                // ViewModel at MockEmailRepository. Intentionally NOT
+                // persisted across process restarts — relaunching the
+                // app re-shows the sign-in screen so the real OAuth path
+                // is still the default behaviour.
+                var useMockOverride by remember { mutableStateOf(!USE_REAL_BACKEND) }
+
+                LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+                    isLoggedIn = authRepository.isLoggedIn
+                }
+
+                val showSignIn = USE_REAL_BACKEND && !isLoggedIn && !useMockOverride
+                val activeRepository = if (USE_REAL_BACKEND && isLoggedIn && !useMockOverride) {
+                    realRepository
+                } else {
+                    mockRepository
+                }
+
+                if (showSignIn) {
+                    SignInScreen(
+                        authRepository = authRepository,
+                        onSignedIn = { isLoggedIn = true },
+                        onUseMockData = { useMockOverride = true },
+                    )
+                } else {
+                    XREmailApp(
+                        viewModelFactory = EmailViewModel.Factory(activeRepository)
+                    )
+                }
             }
         }
 
@@ -195,7 +264,6 @@ private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
     val scope = rememberCoroutineScope()
 
     val ttsManager = remember { TTSManager(context) }
-    val geminiLive = remember { GeminiLiveManager() }
     val geminiText = remember { GeminiTextService() }
     val voiceCompose = remember { VoiceComposeManager(ttsManager) }
     val voiceDispatcher = remember(viewModel) {
@@ -249,196 +317,54 @@ private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
         if (!allGranted()) permissionLauncher.launch(requiredPerms)
     }
 
-    // Connect Gemini Live once the mic permission is settled — but DON'T
-    // open the mic. The WebSocket warms up so the wake-word path can flip
-    // straight from CONNECTED -> LISTENING in <100ms. Without this split
-    // we used to stream the user's mic to the cloud as soon as the app
-    // opened, and the model would respond to background conversation /
-    // ambient noise — exactly the "always on, working really weirdly"
-    // behaviour the user reported.
-    LaunchedEffect(micGranted) {
-        if (micGranted) {
-            geminiLive.setContextProvider { voiceDispatcher.currentContextSummary() }
-            geminiLive.connect(scope)
-        } else {
-            // Mic permission denied / not yet granted is the single
-            // most common reason Gemini "does nothing" — without RECORD_AUDIO
-            // the connect() call is skipped entirely and the user sees
-            // a permanently-CONNECTING-or-DISCONNECTED voice indicator
-            // with no explanation. Surface it.
-            viewModel.showError(
-                "Voice",
-                "Mic permission required for Gemini. Tap the system prompt to allow.",
-            )
-        }
-    }
-    DisposableEffect(geminiLive) {
-        onDispose { geminiLive.disconnect() }
-    }
-
     // ---------------------------------------------------------------------------
-    // "Nothing fails silently" — central error observer.
+    // Push-to-talk voice path (replaces the old Gemini Live streaming + always-
+    // on local recognizer combo).
     //
-    // Every voice-pipeline component that can fail exposes a `lastError`
-    // StateFlow; we collect them all here and pipe non-null updates into
-    // the ViewModel's toast channel so the user actually SEES failures
-    // instead of pressing buttons that quietly do nothing.
+    // Why the rewrite: on Galaxy XR, GeminiLiveManager's continuous bidi
+    // audio stream stalled indefinitely ("Listening…" with no response) —
+    // the SDK's internal VAD never flipped "user done" and its TTS output
+    // was routed to a stream the headset doesn't actually play. Every
+    // available knob (enableInterruptions, initializationHandler, model
+    // pinning) was tried without success.
     //
-    // The components also write their own XrLog lines on failure (see
-    // GeminiLiveManager.connect / summon, LocalCommandRecognizer.start
-    // / startListeningRound, etc.) so the same failure shows up both in
-    // logcat for us and in a toast for the user.
+    // PushToTalkSession uses Android's SpeechRecognizer for ASR (one-shot
+    // per tap) + non-live Gemini (generateContent with tools) for reply +
+    // platform TextToSpeech for output. Every piece of this pipeline is
+    // already proven working on the exact same Galaxy XR hardware in the
+    // user's EVA devfest-2026 project, and the same SpeechRecognizer
+    // component-pinning trick (prefer com.google.android.tts) that made
+    // LocalCommandRecognizer functional is reused here.
     //
-    // distinctUntilChanged + filterNotNull guards against re-toasting
-    // the same error every recomposition.
+    // Trade-offs we accepted:
+    //   * Manual tap-to-start / tap-to-stop (no wake word) — the user
+    //     explicitly asked for push-to-talk after the Live-API path failed.
+    //   * ~1.5-3s one-shot latency vs Live's sub-second streaming — fine
+    //     for a system that actually completes turns.
     // ---------------------------------------------------------------------------
-    LaunchedEffect(geminiLive, viewModel) {
-        // StateFlow already de-dupes consecutive equal values; no
-        // distinctUntilChanged needed.
-        geminiLive.lastError.collect { err ->
-            if (err != null) {
-                viewModel.showError("Gemini", err)
-            }
-        }
-    }
-    LaunchedEffect(geminiLive, viewModel) {
-        geminiLive.state
-            .map { it == GeminiLiveManager.SessionState.ERROR }
-            .distinctUntilChanged()
-            .collect { isError ->
-                if (isError) {
-                    val detail = geminiLive.lastError.value ?: "session error (no detail)"
-                    viewModel.showError("Gemini", "voice session failed — $detail")
-                }
-            }
-    }
-    // localCommands.lastError observer is below where the recognizer
-    // is actually constructed (search for "Local-first voice path").
-
-    // ---------------------------------------------------------------------------
-    // Local-first voice path — replaces the old wake-word + always-on Gemini
-    // Live flow that the user described as "tons of delay, not conversational".
-    //
-    // Architecture:
-    //   1. LocalCommandRecognizer runs continuously on-device (Android
-    //      SpeechRecognizer, on-device variant when available). It captures
-    //      the WHOLE utterance — wake phrase + command — in a single round.
-    //   2. CommandGrammar parses the transcript:
-    //        - "hey gemini archive this"   -> Command.ArchiveEmail (instant)
-    //        - "hey gemini draft a reply"  -> Escalate("draft a reply")
-    //                                          → summon Gemini Live + send text
-    //        - "open the door"             -> NotAddressed (no wake) → ignored
-    //   3. Matched commands fire DIRECTLY into VoiceCommandDispatcher with
-    //      ZERO cloud round-trip (~300-500 ms total: ASR partial + dispatch).
-    //   4. Only escalations open Gemini Live's mic / WebSocket — so the
-    //      "always-on" model behaviour the user disliked is gone.
-    //
-    // Why we kept Gemini Live around at all:
-    //   The grammar is good for the obvious commands (archive/snooze/next/
-    //   open/close/summarize/refresh/reply/send/search/filter), but it can't
-    //   handle "draft a reply saying I'm running late" or "what's the most
-    //   urgent thing in my inbox". Those still need a model. The Escalate
-    //   path forwards the post-wake remainder to Gemini as a text turn so
-    //   the user doesn't have to repeat themselves after the SDK warms the
-    //   mic — which was the OTHER big latency source ("hey gemini" → SDK
-    //   spin-up → user re-says command).
-    val localCommands = remember(geminiLive, voiceDispatcher) {
-        LocalCommandRecognizer(
+    val ptt = remember(voiceDispatcher, ttsManager, geminiText, context) {
+        PushToTalkSession(
             context = context,
-            onLocalCommand = { command ->
-                XrLog.i("Voice", "local-dispatch: $command (no cloud round-trip)")
-                voiceDispatcher.dispatch(command)
-            },
-            onEscalateToGemini = { remainder ->
-                XrLog.i("Voice", "escalate-to-gemini: \"$remainder\"")
-                geminiLive.summon()
-                if (remainder.isNotBlank()) {
-                    // Forward the user's intent as a TEXT turn so Gemini
-                    // doesn't have to re-listen from a cold mic. Saves
-                    // 1-2s of perceived latency vs the old flow.
-                    scope.launch {
-                        try {
-                            geminiLive.sendContextUpdate(remainder)
-                        } catch (t: Throwable) {
-                            XrLog.w("Voice", "forward-to-gemini failed: ${t.message}")
-                        }
-                    }
-                }
-            },
+            tts = ttsManager,
+            gemini = geminiText,
+            dispatchCommand = voiceDispatcher::dispatch,
+            contextProvider = { voiceDispatcher.currentContextSummary() },
         )
     }
     LaunchedEffect(micGranted) {
-        if (micGranted) localCommands.start()
-    }
-    DisposableEffect(localCommands) {
-        onDispose { localCommands.stop() }
-    }
-
-    // Surface local-recognizer failures via the central toast channel.
-    // The recognizer is currently kill-switched (see
-    // ALWAYS_ON_LOCAL_VOICE_ENABLED) so this should never fire today,
-    // but wiring it up means re-enabling wake-word later doesn't
-    // reintroduce silent failure.
-    LaunchedEffect(localCommands, viewModel) {
-        localCommands.lastError.collect { err ->
-            if (err != null) viewModel.showError("Wake-word", err)
+        if (!micGranted) {
+            viewModel.showError(
+                "Voice",
+                "Mic permission required for voice. Tap the system prompt to allow.",
+            )
         }
     }
-
-    // Coordinate the recognizer with Gemini's mic ownership. SAME contract
-    // as the old wake-word coordinator: pause us while Gemini holds the
-    // mic (Android won't share the AudioRecord), resume us when Gemini
-    // dismisses. Without this, every recognizer round returns
-    // ERROR_RECOGNIZER_BUSY and the local command path silently dies
-    // after the first Gemini conversation.
-    LaunchedEffect(geminiLive, localCommands) {
-        geminiLive.state
-            .map { it == GeminiLiveManager.SessionState.LISTENING }
-            .distinctUntilChanged()
-            .collect { isListening ->
-                if (isListening) {
-                    localCommands.pause()
-                } else if (micGranted) {
-                    localCommands.resume()
-                }
-            }
+    DisposableEffect(ptt) {
+        onDispose { ptt.shutdown() }
     }
-
-    // Idle-dismiss: after IDLE_TIMEOUT_MS of no model activity (no
-    // function calls, no manual summon), close the mic so the user has
-    // to wake Gemini again. Keeps the sense that Gemini is "asleep
-    // unless addressed", and stops the perception that the model is
-    // randomly responding to passing conversation.
-    LaunchedEffect(geminiLive) {
-        geminiLive.lastActivityMs.collect { lastActivity ->
-            if (lastActivity == 0L) return@collect
-            if (geminiLive.state.value != GeminiLiveManager.SessionState.LISTENING) return@collect
-            scope.launch {
-                delay(IDLE_TIMEOUT_MS)
-                val sinceLast = System.currentTimeMillis() - geminiLive.lastActivityMs.value
-                val stillListening = geminiLive.state.value ==
-                    GeminiLiveManager.SessionState.LISTENING
-                if (stillListening && sinceLast >= IDLE_TIMEOUT_MS) {
-                    XrLog.i("Wake", "idle-dismiss: ${sinceLast}ms since last activity")
-                    geminiLive.dismiss()
-                }
-            }
-        }
-    }
-
-    // Route function calls the model emits into the ViewModel. After each
-    // dispatch we wait briefly and then mark the model idle so the auto-TTS
-    // summary path can re-engage. The grace window covers the model's short
-    // verbal confirmation that follows most function calls — without it, a
-    // selection-via-voice would fire local TTS on top of the model's "Done."
-    LaunchedEffect(geminiLive, voiceDispatcher) {
-        geminiLive.commands.collect { command ->
-            voiceDispatcher.dispatch(command)
-            geminiLive.bumpActivity()
-            scope.launch {
-                delay(MODEL_TURN_GRACE_MS)
-                geminiLive.markModelIdle()
-            }
+    LaunchedEffect(ptt, viewModel) {
+        ptt.lastError.collect { err ->
+            if (!err.isNullOrBlank()) viewModel.showError("Voice", err)
         }
     }
 
@@ -484,8 +410,7 @@ private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
 
     val ttsState by ttsManager.playbackState.collectAsStateWithLifecycle()
     val ttsProgress by ttsManager.progress.collectAsStateWithLifecycle()
-    val voiceSessionState by geminiLive.state.collectAsStateWithLifecycle()
-    val localRecognizerState by localCommands.state.collectAsStateWithLifecycle()
+    val pttState by ptt.state.collectAsStateWithLifecycle()
     // The standalone VoiceComposeManager is still around for future
     // Gemini-driven flows (edit/confirm via live voice). For the current
     // "Voice" button + canned-reply demo the ViewModel is the source of
@@ -620,8 +545,7 @@ private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
             ttsState = ttsState,
             ttsProgress = ttsProgress,
             tiltScrollDelta = tiltScrollDelta,
-            voiceSessionState = voiceSessionState,
-            localRecognizerState = localRecognizerState,
+            pttState = pttState,
             voiceComposeState = voiceComposeState,
             voiceDraft = voiceDraft,
             handGestures = handGestures,
@@ -646,7 +570,7 @@ private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
             onSend = { viewModel.sendDraft() },
             onCancelCompose = viewModel::cancelCompose,
             onDismissToast = viewModel::dismissToast,
-            onSummonGemini = { geminiLive.summon() },
+            onToggleVoice = { ptt.toggle() },
             // Voice compose — "Voice" button fires a canned instruction so you can
             // exercise the full GENERATING → draft → send flow without a mic/headset.
             onVoiceReply = { viewModel.voiceReply("I'll get back to you by Friday") },
@@ -678,22 +602,3 @@ private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
     //   3. Tier transitions don't tear down two separate FollowingSubspaces
     //      back-to-back — see TierRouter for the full rationale.
 }
-
-/**
- * Grace period after a function call before we mark the model "idle" again.
- * Sized to cover the model's typical short verbal confirmation ("Done.",
- * "Archived.", "Got it.") so the local TTS auto-summary doesn't talk over
- * the tail end of Gemini's reply.
- */
-private const val MODEL_TURN_GRACE_MS = 1_500L
-
-/**
- * After this much time without any Gemini activity (no function call, no
- * explicit re-summon), close the mic and require another "hey gemini" wake
- * word to re-open the conversation. Tuned long enough that natural pauses
- * mid-task ("um, archive that one... and the next") don't dismiss, but
- * short enough that the user doesn't accidentally leave the mic open
- * while putting the headset down.
- */
-private const val IDLE_TIMEOUT_MS = 18_000L
-

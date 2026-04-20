@@ -36,46 +36,34 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.xremail.app.ui.theme.XREmailColors
-import com.xremail.app.voice.GeminiLiveManager
-import com.xremail.app.voice.LocalCommandRecognizer
+import com.xremail.app.voice.PushToTalkSession
 
 /**
- * Always-visible voice indicator. Tells the user EXACTLY what the voice
- * subsystem is doing right now and how to invoke it.
+ * Push-to-talk voice indicator and trigger.
  *
- * Visual contract by composite state:
+ * Tap to start a round, tap again to stop. The chip mirrors
+ * [PushToTalkSession.State] so the user always knows which stage of the
+ * voice turn is happening.
  *
- *   Gemini.LISTENING                  -> animated red mic + "Listening..."
- *                                        (Gemini Live mic is open, model
- *                                        will respond when user speaks)
+ *   IDLE       -> "Tap to talk"               (green pulse, tappable)
+ *   LISTENING  -> "Listening... tap to stop"  (red pulse, tappable)
+ *   THINKING   -> "Thinking..."               (amber pulse, not tappable)
+ *   SPEAKING   -> "Speaking..."               (muted icon, not tappable)
+ *   ERROR      -> "Voice error — tap to retry" (red, tappable)
  *
- *   Gemini.CONNECTING                 -> pulsing amber mic + "Connecting..."
- *
- *   Local.LISTENING + Gemini.CONNECTED -> steady green mic + "Say 'Hey Gemini'"
- *                                         (the normal idle-but-ready state)
- *
- *   Local.PAUSED                      -> dim mic + "Voice paused"
- *                                         (recognizer paused, e.g. while
- *                                         Gemini owns the mic)
- *
- *   Gemini.ERROR or Local.ERROR       -> red MicOff + "Voice error"
- *
- *   else (initial / unknown)          -> gray mic + "Voice off"
- *
- * The user almost always sees "Say 'Hey Gemini'" — the explicit cue that
- * was missing in the previous build, where the only voice signal was a
- * mic icon that disappeared the moment voice wasn't active. The user
- * had no way to know voice was even an option.
+ * Under the old Live API + local always-on recognizer this was a
+ * three-state overlay that tried to describe two parallel subsystems.
+ * Now there's exactly one voice pipeline and the chip can show its
+ * literal state.
  */
 @Composable
 fun VoicePrompt(
-    voiceState: GeminiLiveManager.SessionState,
-    localState: LocalCommandRecognizer.State,
+    state: PushToTalkSession.State,
+    onToggle: () -> Unit,
     modifier: Modifier = Modifier,
     compact: Boolean = false,
-    onSummonGemini: (() -> Unit)? = null,
 ) {
-    val visual = remember(voiceState, localState) { computeVisual(voiceState, localState) }
+    val visual = remember(state) { computeVisual(state) }
 
     val pulseAlpha by rememberInfiniteTransition(label = "voicePulse").animateFloat(
         initialValue = if (visual.pulse) 0.45f else 1f,
@@ -88,32 +76,11 @@ fun VoicePrompt(
     )
     val effectiveAlpha = if (visual.pulse) pulseAlpha else 1f
 
-    // Pinch-to-summon: in any state where Gemini Live is reachable but
-    // not already streaming, a tap opens the mic immediately. This is
-    // the manual escape hatch when the local wake-word recognizer is
-    // broken (Galaxy XR's on-device service silently fails — the
-    // VoicePrompt becomes the user's only way in).
-    // Tap-to-summon is available whenever the live session is reachable
-    // and we're not already streaming — including the IDLE case where
-    // ALWAYS_ON_LOCAL_VOICE_ENABLED is off (no wake-word, tap is the
-    // ONLY way in). Without IDLE in this list the user is stuck staring
-    // at "Voice off" with no way to talk to Gemini.
-    val canSummon = onSummonGemini != null && (
-        voiceState == GeminiLiveManager.SessionState.CONNECTED ||
-            voiceState == GeminiLiveManager.SessionState.ERROR ||
-            localState == LocalCommandRecognizer.State.ERROR ||
-            localState == LocalCommandRecognizer.State.IDLE
-    )
-
     val rowModifier = modifier
         .clip(RoundedCornerShape(if (compact) 14.dp else 18.dp))
         .background(visual.bgColor)
         .let { base ->
-            if (canSummon && onSummonGemini != null) {
-                base.clickable(onClick = onSummonGemini)
-            } else {
-                base
-            }
+            if (visual.tappable) base.clickable(onClick = onToggle) else base
         }
         .padding(
             horizontal = if (compact) 10.dp else 14.dp,
@@ -163,91 +130,57 @@ private data class VoiceVisual(
     val bgColor: Color,
     val pulse: Boolean,
     val muted: Boolean,
+    val tappable: Boolean,
 )
 
-private fun computeVisual(
-    voice: GeminiLiveManager.SessionState,
-    local: LocalCommandRecognizer.State,
-): VoiceVisual = when {
-    voice == GeminiLiveManager.SessionState.LISTENING -> VoiceVisual(
-        label = "Listening...",
-        iconColor = XREmailColors.priorityHigh,
-        textColor = XREmailColors.onSurface,
-        bgColor = XREmailColors.priorityHigh.copy(alpha = 0.18f),
-        pulse = true,
-        muted = false,
-    )
-
-    voice == GeminiLiveManager.SessionState.CONNECTING -> VoiceVisual(
-        label = "Connecting...",
-        iconColor = XREmailColors.priorityMedium,
-        textColor = XREmailColors.onSurface,
-        bgColor = XREmailColors.priorityMedium.copy(alpha = 0.15f),
-        pulse = true,
-        muted = false,
-    )
-
-    // Local recognizer dead OR intentionally disabled (ALWAYS_ON_LOCAL_VOICE_ENABLED=false)
-    // but Gemini Live is up: show "Tap to talk" so the user has a clear
-    // manual path. We pulse it so it's actually noticeable in the
-    // peripheral HUD — without the pulse the user assumes voice is off.
-    voice == GeminiLiveManager.SessionState.CONNECTED && (
-        local == LocalCommandRecognizer.State.ERROR ||
-            local == LocalCommandRecognizer.State.IDLE
-    ) -> VoiceVisual(
+private fun computeVisual(state: PushToTalkSession.State): VoiceVisual = when (state) {
+    PushToTalkSession.State.IDLE -> VoiceVisual(
         label = "Tap to talk",
         iconColor = XREmailColors.aiAccent,
         textColor = XREmailColors.onSurface,
         bgColor = XREmailColors.aiAccent.copy(alpha = 0.18f),
         pulse = true,
         muted = false,
+        tappable = true,
     )
 
-    voice == GeminiLiveManager.SessionState.ERROR ||
-        local == LocalCommandRecognizer.State.ERROR -> VoiceVisual(
-        label = "Voice error",
+    PushToTalkSession.State.LISTENING -> VoiceVisual(
+        label = "Listening... tap to stop",
         iconColor = XREmailColors.priorityHigh,
-        textColor = XREmailColors.priorityHigh,
-        bgColor = XREmailColors.priorityHigh.copy(alpha = 0.12f),
-        pulse = false,
-        muted = true,
-    )
-
-    voice == GeminiLiveManager.SessionState.CONNECTED &&
-        local == LocalCommandRecognizer.State.LISTENING -> VoiceVisual(
-        label = "Say \"Hey Gemini\"",
-        iconColor = XREmailColors.aiAccent,
         textColor = XREmailColors.onSurface,
-        bgColor = XREmailColors.aiAccent.copy(alpha = 0.14f),
-        pulse = false,
-        muted = false,
-    )
-
-    voice == GeminiLiveManager.SessionState.CONNECTED &&
-        local == LocalCommandRecognizer.State.STARTING -> VoiceVisual(
-        label = "Voice starting…",
-        iconColor = XREmailColors.priorityMedium,
-        textColor = XREmailColors.onSurface,
-        bgColor = XREmailColors.priorityMedium.copy(alpha = 0.12f),
+        bgColor = XREmailColors.priorityHigh.copy(alpha = 0.2f),
         pulse = true,
         muted = false,
+        tappable = true,
     )
 
-    local == LocalCommandRecognizer.State.PAUSED -> VoiceVisual(
-        label = "Voice paused",
-        iconColor = XREmailColors.onSurfaceDim,
-        textColor = XREmailColors.onSurfaceDim,
-        bgColor = XREmailColors.surfaceVariant.copy(alpha = 0.6f),
+    PushToTalkSession.State.THINKING -> VoiceVisual(
+        label = "Thinking...",
+        iconColor = XREmailColors.priorityMedium,
+        textColor = XREmailColors.onSurface,
+        bgColor = XREmailColors.priorityMedium.copy(alpha = 0.18f),
+        pulse = true,
+        muted = false,
+        tappable = false,
+    )
+
+    PushToTalkSession.State.SPEAKING -> VoiceVisual(
+        label = "Speaking...",
+        iconColor = XREmailColors.primary,
+        textColor = XREmailColors.onSurface,
+        bgColor = XREmailColors.primary.copy(alpha = 0.15f),
         pulse = false,
         muted = false,
+        tappable = false,
     )
 
-    else -> VoiceVisual(
-        label = "Voice off",
-        iconColor = XREmailColors.onSurfaceDim,
-        textColor = XREmailColors.onSurfaceDim,
-        bgColor = XREmailColors.surfaceVariant.copy(alpha = 0.5f),
+    PushToTalkSession.State.ERROR -> VoiceVisual(
+        label = "Voice error — tap to retry",
+        iconColor = XREmailColors.priorityHigh,
+        textColor = XREmailColors.priorityHigh,
+        bgColor = XREmailColors.priorityHigh.copy(alpha = 0.14f),
         pulse = false,
         muted = true,
+        tappable = true,
     )
 }

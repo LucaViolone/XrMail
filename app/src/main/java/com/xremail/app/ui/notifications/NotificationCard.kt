@@ -91,15 +91,26 @@ fun NotificationCard(
         confirmValueChange = { _ -> false },
     )
 
-    // CRITICAL: the clickable WRAPS the SwipeToDismissBox here (not the
-    // inner content). SwipeToDismissBox's AnchoredDraggable installs a
-    // pointer-input modifier that consumes the gaze+pinch DOWN event
-    // before it can reach a clickable child — the user reported this
-    // as "pinching to click doesn't open or expand anything" on the
-    // notification cards. With the clickable on the outside, the OS
-    // gaze+pinch click pipeline lands ON the outer Modifier and fires
-    // before the dismiss state ever sees the pointer. Drag still works
-    // because horizontal motion bypasses the simple-click recognizer.
+    // OS GAZE+PINCH CLICKABLE: the outer Box is the click target so the
+    // gaze+pinch event lands BEFORE SwipeToDismissBox's AnchoredDraggable
+    // can consume it (its pointer-input modifier eats the DOWN event
+    // before an inner clickable would see it — that's why the click
+    // handler can't live on the inner content Row).
+    //
+    // Per 2026-04-19 user direction: a direct pinch on a card is the
+    // "open this notification" path and should feel snappy — same shape
+    // as tapping a notification on a phone. The previous concern about
+    // "gaze expanding on its own" traces to incidental primary-hand
+    // pinches, not gaze itself. The mitigations for that live elsewhere:
+    //
+    //   * SecondaryHandGestures suppresses sub-80ms "ghost pinches"
+    //     and gates PINCH_HOLD_EXPAND behind a 550ms deliberate hold.
+    //   * The peripheral HUD now shows a pinch-hold progress ring
+    //     (mirror of the collapse ring) so the user can SEE when
+    //     a pinch is being held vs. flickering.
+    //
+    // The click path here is still reachable via OS gaze+pinch even
+    // without any visible ring: it's a single frame event, not a hold.
     androidx.compose.foundation.layout.Box(
         modifier = modifier
             .scale(highlightScale)
