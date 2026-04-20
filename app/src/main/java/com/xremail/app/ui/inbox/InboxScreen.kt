@@ -26,6 +26,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.xremail.app.data.Email
 import com.xremail.app.data.EmailCategory
+import com.xremail.app.data.Mailbox
 import com.xremail.app.ui.theme.XREmailColors
 
 @Composable
@@ -33,8 +34,10 @@ fun InboxScreen(
     emails: List<Email>,
     selectedEmail: Email?,
     activeCategory: EmailCategory?,
+    activeMailbox: Mailbox,
     onEmailSelected: (Email) -> Unit,
     onCategorySelected: (EmailCategory?) -> Unit,
+    onMailboxSelected: (Mailbox) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -51,14 +54,25 @@ fun InboxScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 Text(
-                    text = "Inbox",
+                    text = when (activeMailbox) {
+                        Mailbox.INBOX -> "Inbox"
+                        Mailbox.SENT -> "Sent"
+                    },
                     style = MaterialTheme.typography.headlineMedium,
                     color = XREmailColors.onSurfaceStrong,
                 )
-                val unread = emails.count { !it.isRead }
-                if (unread > 0) {
+                if (activeMailbox == Mailbox.INBOX) {
+                    val unread = emails.count { !it.isRead }
+                    if (unread > 0) {
+                        Text(
+                            text = "$unread unread",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = XREmailColors.onSurfaceDim,
+                        )
+                    }
+                } else {
                     Text(
-                        text = "$unread unread",
+                        text = "${emails.size} sent",
                         style = MaterialTheme.typography.labelMedium,
                         color = XREmailColors.onSurfaceDim,
                     )
@@ -66,6 +80,13 @@ fun InboxScreen(
             }
 
             Spacer(Modifier.height(16.dp))
+
+            MailboxTabs(
+                activeMailbox = activeMailbox,
+                onMailboxSelected = onMailboxSelected,
+            )
+
+            Spacer(Modifier.height(12.dp))
 
             CategoryChips(
                 activeCategory = activeCategory,
@@ -108,6 +129,36 @@ fun InboxScreen(
                     onClick = { onEmailSelected(email) },
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun MailboxTabs(
+    activeMailbox: Mailbox,
+    onMailboxSelected: (Mailbox) -> Unit,
+) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        listOf(Mailbox.INBOX to "Inbox", Mailbox.SENT to "Sent").forEach { (mailbox, label) ->
+            FilterChip(
+                selected = activeMailbox == mailbox,
+                onClick = { onMailboxSelected(mailbox) },
+                label = {
+                    Text(
+                        text = label,
+                        style = MaterialTheme.typography.labelLarge,
+                    )
+                },
+                colors = FilterChipDefaults.filterChipColors(
+                    containerColor = XREmailColors.surfaceVariant.copy(alpha = 0.5f),
+                    selectedContainerColor = XREmailColors.primary.copy(alpha = 0.2f),
+                    labelColor = XREmailColors.onSurfaceDim,
+                    selectedLabelColor = XREmailColors.primary,
+                ),
+                shape = RoundedCornerShape(22.dp),
+            )
         }
     }
 }

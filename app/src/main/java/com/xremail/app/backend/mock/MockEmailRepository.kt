@@ -2,7 +2,11 @@ package com.xremail.app.backend.mock
 
 import com.xremail.app.backend.service.EmailRepository
 import com.xremail.app.data.*
+import com.xremail.app.util.XrLog
 import kotlinx.coroutines.delay
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * Mock [EmailRepository] for Phase 1 / offline development.
@@ -30,11 +34,20 @@ class MockEmailRepository : EmailRepository {
         labels: List<String>,
     ): Result<List<Email>> {
         delay(SIMULATED_DELAY_MS)
+        // Label-aware filtering so Inbox/Sent tabs return the right set.
+        // Gmail uses "INBOX" / "SENT" string labels; we map those onto the
+        // [Email.mailbox] enum. Unknown/empty labels default to INBOX so
+        // existing call sites that don't care about folders keep working.
+        val mailbox = when {
+            labels.any { it.equals("SENT", ignoreCase = true) } -> Mailbox.SENT
+            else -> Mailbox.INBOX
+        }
+        val inFolder = emails.filter { it.mailbox == mailbox }
         val filtered = if (query.isBlank()) {
-            emails.toList()
+            inFolder
         } else {
             val q = query.lowercase()
-            emails.filter {
+            inFolder.filter {
                 it.subject.lowercase().contains(q) ||
                 it.sender.lowercase().contains(q) ||
                 it.body.lowercase().contains(q)
@@ -56,7 +69,40 @@ class MockEmailRepository : EmailRepository {
 
     override suspend fun sendEmail(draft: EmailDraft): Result<Unit> {
         delay(SIMULATED_DELAY_MS)
-        // Phase 1: no-op (draft is discarded)
+        // Mock mode is the only place we can actually "send" — we don't
+        // have an SMTP pipe, so instead we materialize the outgoing
+        // message as a synthetic Email tagged [Mailbox.SENT] and drop it
+        // at the top of the list. That way the Sent tab shows exactly
+        // what the user just dictated, making the voice-compose flow
+        // end-to-end verifiable without a real inbox.
+        val to = draft.to.firstOrNull() ?: "unknown@recipient"
+        val recipientName = emails.firstOrNull { it.senderEmail == to }?.sender
+            ?: to.substringBefore('@').replaceFirstChar { it.titlecase(Locale.US) }
+        val now = Date()
+        val timestamp = SimpleDateFormat("h:mm a", Locale.US).format(now)
+        val sent = Email(
+            id = "sent-${now.time}",
+            sender = "To: $recipientName",
+            senderEmail = to,
+            subject = draft.subject.ifBlank { "(no subject)" },
+            body = draft.body,
+            timestamp = timestamp,
+            priority = Priority.LOW,
+            category = EmailCategory.PEOPLE,
+            action = EmailAction.READ_FULL,
+            isRead = true,
+            aiSummary = "Sent message — ${draft.body.take(80)}",
+            urgencyScore = 0f,
+            mailbox = Mailbox.SENT,
+        )
+        emails.add(0, sent)
+
+        XrLog.i(
+            "MockRepo",
+            "sendEmail: appended to SENT id=${sent.id} to=${draft.to} " +
+                "subject=\"${sent.subject}\" bodyLen=${draft.body.length}",
+        )
+        XrLog.d("MockRepo", "sendEmail body: ${draft.body}")
         return Result.success(Unit)
     }
 

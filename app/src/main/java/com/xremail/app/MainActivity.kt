@@ -560,6 +560,7 @@ private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
             onEmailSelected = viewModel::selectEmail,
             onOpenFromNotification = viewModel::openFromNotification,
             onCategorySelected = viewModel::filterByCategory,
+            onMailboxSelected = viewModel::selectMailbox,
             onToggleAiSummary = viewModel::toggleAiSummary,
             onReply = viewModel::startCompose,
             onArchive = viewModel::archiveSelected,
@@ -578,17 +579,15 @@ private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
             onCancelVoice = viewModel::cancelCompose,
         )
 
-        // Show the 2D pill *only* when the main panel actually owns the user's
-        // foveal view (INBOX / FOCUS). For peripheral / lazy-follow tiers the
-        // main panel is offscreen-or-tiny and we'd rather render the pill
-        // head-locked in front of the user — see [HeadLockedGestureFeedback].
-        // Without this gate, both copies would collect from the same
-        // SharedFlow and the user would feel a double-haptic on every pinch.
-        val showInline2dFeedback = uiState.tier == InteractionTier.INBOX ||
-            uiState.tier == InteractionTier.FOCUS
-        if (showInline2dFeedback) {
-            GestureFeedbackOverlay(gestures = handGestures.gestures)
-        }
+        // Gesture feedback pill is rendered UNCONDITIONALLY in every
+        // tier. The user explicitly asked for "gesture recognition
+        // feedback and consistency across tiers" — gating it to
+        // INBOX/FOCUS meant users in AMBIENT_HUD or NOTIFICATION_CARDS
+        // fired gestures with zero visible confirmation. The pill
+        // overlays the main panel (which is a placeholder in peripheral
+        // tiers, so the pill just shows up against that placeholder;
+        // good enough — we get consistent feedback across every tier).
+        GestureFeedbackOverlay(gestures = handGestures.gestures)
     }
 
     // NOTE: the head-locked gesture-feedback pill for AMBIENT_HUD /

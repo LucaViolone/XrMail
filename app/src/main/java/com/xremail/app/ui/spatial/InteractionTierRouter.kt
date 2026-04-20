@@ -44,6 +44,7 @@ import androidx.xr.compose.subspace.layout.offset
 import androidx.xr.compose.subspace.layout.width
 import com.xremail.app.data.Email
 import com.xremail.app.data.EmailCategory
+import com.xremail.app.data.Mailbox
 import com.xremail.app.data.Priority
 import com.xremail.app.tracking.SecondaryHandGestures
 import com.xremail.app.ui.notifications.NotificationCardStack
@@ -130,6 +131,7 @@ fun InteractionTierRouter(
     onEmailSelected: (Email) -> Unit,
     onOpenFromNotification: (Email) -> Unit,
     onCategorySelected: (EmailCategory?) -> Unit,
+    onMailboxSelected: (Mailbox) -> Unit,
     onToggleAiSummary: () -> Unit,
     onReply: () -> Unit,
     onArchive: () -> Unit,
@@ -160,13 +162,11 @@ fun InteractionTierRouter(
     // as they perform the gesture (and can release to cancel mid-hold).
     val closedFistProgress by (handGestures?.closedFistProgress
         ?: kotlinx.coroutines.flow.MutableStateFlow(0f)).collectAsState()
-    // Live 0f→1f progress of the user's pinch "expand" hold. Drives the
-    // ExpandAffordance ring in AMBIENT_HUD and NOTIFICATION_CARDS so a
-    // 550ms hold is VISIBLE as it ramps — parity with the collapse ring.
-    // A quick pinch-tap (PINCH_SELECT) bypasses this entirely because
-    // it resolves in a single frame and the tier transition itself is
-    // the feedback.
-    val pinchHoldProgress by (handGestures?.pinchHoldProgress
+    // Live 0f→1f progress of the user's REVERSE-PINCH "expand" gesture.
+    // 0 when the hand isn't currently opening from a compressed pose,
+    // ramps up as thumb-index distance grows, snaps to 1 the frame
+    // REVERSE_PINCH_EXPAND fires. Drives the ExpandAffordance ring.
+    val reversePinchProgress by (handGestures?.reversePinchProgress
         ?: kotlinx.coroutines.flow.MutableStateFlow(0f)).collectAsState()
 
     LaunchedEffect(uiState.tier, canUsePeripheral) {
@@ -205,7 +205,7 @@ fun InteractionTierRouter(
                 voiceComposeState = voiceComposeState,
                 voiceDraft = voiceDraft,
                 closedFistProgress = closedFistProgress,
-                pinchHoldProgress = pinchHoldProgress,
+                reversePinchProgress = reversePinchProgress,
                 onExpandToNotifications = onExpandToNotifications,
                 onCollapseFromNotifications = onCollapseFromNotifications,
                 onExpandToInbox = onExpandToInbox,
@@ -217,6 +217,7 @@ fun InteractionTierRouter(
                 onSnoozeEmail = onSnoozeEmail,
                 onDismissToast = onDismissToast,
                 onToggleVoice = onToggleVoice,
+                onMailboxSelected = onMailboxSelected,
             )
         }
     }
@@ -271,84 +272,33 @@ fun InteractionTierRouter(
             behavior = followBehavior,
             dimensions = trackedDims,
         ) {
-            // Tier-dependent panel size. AMBIENT_HUD is a small ambient
-            // banner; NOTIFICATION_CARDS is a medium peripheral preview;
-            // INBOX is the full-size reading panel. We resize the panel
-            // itself (via the SubspaceModifier) instead of constraining
-            // content because rendering small content inside a giant
-            // phantom panel wastes spatial real estate and looks weird.
-            // Modifier changes do NOT remount the SpatialPanel entity —
-            // only the followTarget / behavior / dimensions identity
-            // matters for that, and those are still remember()'d above.
-            // Per-tier panel width is fixed (a panel that grows wider on
-            // each tier transition feels jarring), but per-tier HEIGHT is
-            // content-driven for the tiers where empty space wastes
-            // peripheral real estate.
+            // Per-tier panel sizing — FIXED per tier (no longer data-
+            // driven, unlike the old unreadCount-computed height that
+            // shrank the cards panel every time the user read an email
+            // and collapsed back). Stability across transitions comes
+            // from a stable X offset + stable top anchor — only
+            // height / width vary by tier, and each tier has ONE
+            // deterministic size that doesn't drift with state.
+            //
+            // 2026-04-19 follow-up: the previous "one stable size for
+            // everything" (440×560) left the small tiers with dead
+            // bezel space and the big tier (INBOX) cramped + clipping
+            // content. Per-tier sizing is the right shape for the
+            // content, the shared X offset + top anchor keeps the
+            // panel from visibly "moving" on transitions.
             val panelWidth = when (uiState.tier) {
-                InteractionTier.AMBIENT_HUD -> 320.dp
-                InteractionTier.NOTIFICATION_CARDS -> 380.dp
+                InteractionTier.AMBIENT_HUD -> 380.dp
+                InteractionTier.NOTIFICATION_CARDS -> 420.dp
                 else -> 480.dp
             }
-            // NOTIFICATION_CARDS height = chrome (voice prompt row +
-            // collapse affordance + outer padding + stack header + stack
-            // padding) plus actual visible card count.
-            //
-            // We use the LIVE unread count (not coerceAtLeast(1)) so when
-            // the stack is empty — which happens after the user reads
-            // every email in FOCUS and collapses back here — the panel
-            // shrinks to the inbox-zero pill instead of leaving 200dp
-            // of empty space around it.
-            //
-            // Magic numbers were re-measured 2026-04-19 against the
-            // tightened NotificationCardStack (8dp inner padding, 6dp
-            // inter-row spacing, no footer hints row).
-            val visibleNotifCards = uiState.unreadCount.coerceAtMost(5)
             val panelHeight = when (uiState.tier) {
-                // AMBIENT_HUD now contains: voice prompt + expand-
-                // affordance row (~34dp — the ExpandAffordance pill is
-                // the tallest row element at ~34dp) + 6dp spacing +
-                // notification banner (~52dp content) + outer 8dp×2
-                // padding. Bumped from 110dp → 120dp when the expand
-                // ring was added — without the bump the pill clips
-                // the bottom of the banner by ~4dp. The "Pinch + hold
-                // to expand" footer text was deleted separately; the
-                // expand ring replaces it and sits inline in the top
-                // row instead of taking a dedicated line below.
-                InteractionTier.AMBIENT_HUD -> 120.dp
-                InteractionTier.NOTIFICATION_CARDS -> {
-                    if (visibleNotifCards == 0) {
-                        // Just the inbox-zero pill + collapse affordance
-                        // + voice prompt row + outer padding.
-                        140.dp
-                    } else {
-                        // CHROME_DP covers: 12dp×2 outer Column padding +
-                        // ~32dp voice/affordance row + 10dp spacedBy +
-                        // 8dp×2 stack inner padding + ~24dp stack header
-                        // row + 6dp spacedBy below header. ≈ 110dp.
-                        val CHROME_DP = 110
-                        // PER_CARD_DP: card content height ~62dp + 6dp
-                        // inter-row spacing.
-                        val PER_CARD_DP = 68
-                        val computed = CHROME_DP + visibleNotifCards * PER_CARD_DP
-                        // Clamp: never grow past 500 (5 cards × 68 +
-                        // chrome = 450, +50 slack), never shrink below
-                        // the 1-card height of 178.
-                        computed.coerceIn(178, 500).dp
-                    }
-                }
-                else -> 680.dp
+                InteractionTier.AMBIENT_HUD -> 140.dp
+                InteractionTier.NOTIFICATION_CARDS -> 500.dp
+                else -> 700.dp
             }
-            // Horizontal offset = "how far right of forward gaze does the
-            // panel sit". Bigger numbers = further right = more peripheral.
-            // The user reported the panel as "a little too centered" at
-            // 200/220/260, so we push everything further right while
-            // preserving the relative ordering (bigger panels need to be
-            // pushed further so they don't crowd central vision).
-            val panelOffsetX = when (uiState.tier) {
-                InteractionTier.AMBIENT_HUD -> 300.dp
-                InteractionTier.NOTIFICATION_CARDS -> 320.dp
-                else -> 360.dp
-            }
+            // Stable X offset across tiers — no more 60dp horizontal
+            // slide every transition.
+            val panelOffsetX = 340.dp
             SpatialPanel(
                 modifier = SubspaceModifier
                     .width(panelWidth)
@@ -374,7 +324,7 @@ fun InteractionTierRouter(
                             voiceComposeState = voiceComposeState,
                             voiceDraft = voiceDraft,
                             closedFistProgress = closedFistProgress,
-                            pinchHoldProgress = pinchHoldProgress,
+                            reversePinchProgress = reversePinchProgress,
                             onExpandToNotifications = onExpandToNotifications,
                             onCollapseFromNotifications = onCollapseFromNotifications,
                             onExpandToInbox = onExpandToInbox,
@@ -386,6 +336,7 @@ fun InteractionTierRouter(
                             onSnoozeEmail = onSnoozeEmail,
                             onDismissToast = onDismissToast,
                             onToggleVoice = onToggleVoice,
+                            onMailboxSelected = onMailboxSelected,
                         )
                     }
                 }
@@ -405,10 +356,12 @@ fun InteractionTierRouter(
                 selectedContact = uiState.selectedContact,
                 mode = uiState.mode,
                 activeCategory = uiState.activeCategory,
+                activeMailbox = uiState.activeMailbox,
                 isAiSummaryExpanded = uiState.isAiSummaryExpanded,
                 unreadCount = uiState.unreadCount,
                 onEmailSelected = onEmailSelected,
                 onCategorySelected = onCategorySelected,
+                onMailboxSelected = onMailboxSelected,
                 onToggleAiSummary = onToggleAiSummary,
                 onReply = onReply,
                 onArchive = onArchive,
@@ -482,7 +435,7 @@ private fun PeripheralTierContent(
     @Suppress("UNUSED_PARAMETER") voiceComposeState: VoiceComposeManager.ComposeState,
     voiceDraft: VoiceDraft?,
     closedFistProgress: Float,
-    pinchHoldProgress: Float,
+    reversePinchProgress: Float,
     onExpandToNotifications: () -> Unit,
     onCollapseFromNotifications: () -> Unit,
     onExpandToInbox: () -> Unit,
@@ -494,17 +447,28 @@ private fun PeripheralTierContent(
     onSnoozeEmail: (Email) -> Unit,
     onDismissToast: () -> Unit,
     onToggleVoice: () -> Unit = {},
+    onMailboxSelected: (Mailbox) -> Unit = {},
 ) {
-    // AMBIENT_HUD wants tight padding (the whole point of the tier is
-    // to be the smallest possible peripheral footprint); deeper tiers
-    // can use more breathing room. Branch on tier here so we don't pay
-    // a 24dp tax on the smallest panel just because INBOX needs it.
-    val outerPadding = if (tier == InteractionTier.AMBIENT_HUD) 8.dp else 12.dp
-    val outerSpacing = if (tier == InteractionTier.AMBIENT_HUD) 6.dp else 10.dp
+    // Outer padding / inter-row spacing are constant across every tier
+    // so the header row (voice + expand + collapse) anchors to the same
+    // pixel position regardless of which tier is mounted — only the
+    // panel height underneath it varies.
+    val outerPadding = 12.dp
+    val outerSpacing = 10.dp
     Column(
         modifier = Modifier.fillMaxSize().padding(outerPadding),
         verticalArrangement = Arrangement.spacedBy(outerSpacing),
     ) {
+        // Header row — voice prompt on the left, two 28dp affordance
+        // icons on the right. The affordances used to be pill-shaped
+        // with labels ("Spread to focus" / "Close fist to back out")
+        // which worked at 480dp wide but overflowed + visually collided
+        // with the voice prompt at 380–420dp, producing the cluttered
+        // look on AMBIENT_HUD / NOTIFICATION_CARDS. Icon-only pills
+        // free up ~200dp of horizontal real estate without losing
+        // discoverability — the ring-fill animation still teaches the
+        // gesture, and the pill contentDescription keeps the hint
+        // available to accessibility services.
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
@@ -516,115 +480,80 @@ private fun PeripheralTierContent(
                 compact = true,
                 modifier = Modifier.weight(1f, fill = false),
             )
-            // Expand affordance — only where expansion is a meaningful
-            // gesture-path (AMBIENT_HUD → cards, cards → INBOX). INBOX
-            // → FOCUS is a direct pinch on a row, not a hold, so no
-            // ring there. FOCUS is the top of the hierarchy. Ring
-            // fills 0→1 as the user holds a pinch so a quick
-            // PINCH_SELECT doesn't need the affordance but the
-            // holding path gets visible "you're doing a thing"
-            // confirmation identical to the collapse ring.
-            if (tier == InteractionTier.AMBIENT_HUD ||
-                tier == InteractionTier.NOTIFICATION_CARDS
-            ) {
-                ExpandAffordance(
-                    progress = pinchHoldProgress,
-                    label = when (tier) {
-                        InteractionTier.AMBIENT_HUD -> "Pinch to expand"
-                        InteractionTier.NOTIFICATION_CARDS -> "Pinch + hold for inbox"
-                        else -> "Pinch + hold to expand"
-                    },
-                )
+            if (tier != InteractionTier.FOCUS) {
+                ExpandAffordance(progress = reversePinchProgress)
             }
-            // Visible collapse affordance — only when there's somewhere
-            // to collapse to. AMBIENT_HUD is the floor of the tier
-            // hierarchy so it doesn't get one (closed-fist there is a
-            // no-op in the gesture mapper anyway). Ring fills 0→1 as the
-            // user holds a fist so the gesture is discoverable AND the
-            // user gets live confirmation it's being recognized.
-            if (tier != InteractionTier.AMBIENT_HUD) {
-                CollapseAffordance(
-                    progress = closedFistProgress,
-                    label = when (tier) {
-                        InteractionTier.NOTIFICATION_CARDS -> "Close fist to dismiss"
-                        InteractionTier.INBOX -> "Close fist to back out"
-                        InteractionTier.FOCUS -> "Close fist to back out"
-                        else -> "Close fist to collapse"
-                    },
-                )
-            }
+            CollapseAffordance(progress = closedFistProgress)
         }
 
-        when (tier) {
-            InteractionTier.AMBIENT_HUD -> {
-                AmbientHud(
-                    unreadCount = uiState.unreadCount,
-                    hasHighPriority = uiState.emails.any {
-                        it.priority == Priority.HIGH && !it.isRead
-                    },
-                    emails = uiState.emails,
-                    ttsState = ttsState,
-                    ttsProgress = ttsProgress,
-                    voiceState = pttState,
-                    toastMessage = uiState.toastMessage,
-                    onExpandToNotifications = {
-                        XrLog.tier(
-                            "AMBIENT_HUD", "NOTIFICATION_CARDS",
-                            "banner.expand (pinch / click)",
-                        )
-                        onExpandToNotifications()
-                    },
-                    onDismissToast = onDismissToast,
-                )
-                // "Pinch + hold to expand" hint REMOVED 2026-04-19. The
-                // user described it as adding "a ton of extra space" to
-                // the AMBIENT_HUD — and they're right: it cost ~24dp of
-                // vertical chrome on a panel whose entire purpose is to
-                // be the smallest possible peripheral footprint. Users
-                // who need the gesture hint will discover it via the
-                // CollapseAffordance ring on the next tier (which uses
-                // the same gesture in reverse) or by trying it.
-            }
+        // Content area — wrapped in Modifier.weight(1f) so whichever
+        // tier is active expands to fill the remaining panel height
+        // below the header. Before this weight, NotificationCardStack
+        // (no fillMaxHeight) took only its intrinsic size and left
+        // ~200dp of empty space at the bottom of the 500dp panel
+        // ("a lot of empty and bezel space"), while InboxPanel
+        // (fillMaxSize) clipped the last email card. weight(1f) gives
+        // every tier the exact same amount of room to lay out in.
+        Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
+            when (tier) {
+                InteractionTier.AMBIENT_HUD -> {
+                    AmbientHud(
+                        unreadCount = uiState.unreadCount,
+                        hasHighPriority = uiState.emails.any {
+                            it.priority == Priority.HIGH && !it.isRead
+                        },
+                        emails = uiState.emails,
+                        ttsState = ttsState,
+                        ttsProgress = ttsProgress,
+                        voiceState = pttState,
+                        toastMessage = uiState.toastMessage,
+                        onExpandToNotifications = {
+                            XrLog.tier(
+                                "AMBIENT_HUD", "NOTIFICATION_CARDS",
+                                "banner.expand (pinch / click)",
+                            )
+                            onExpandToNotifications()
+                        },
+                        onDismissToast = onDismissToast,
+                    )
+                }
 
-            InteractionTier.NOTIFICATION_CARDS -> {
-                NotificationCardStack(
-                    emails = uiState.emails,
-                    highlightedId = uiState.highlightedNotificationId,
-                    tiltScrollDelta = tiltScrollDelta,
-                    onSelectEmail = onOpenFromNotification,
-                    onArchiveEmail = onArchiveEmail,
-                    onSnoozeEmail = onSnoozeEmail,
-                    onCollapseToHud = onCollapseFromNotifications,
-                    onExpandToInbox = onExpandToInbox,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                // No outer hint here — the stack's own header shows count
-                // + close, and the collapse affordance ring above shows
-                // how to back out. Adding a "Pinch a card to open it"
-                // line below was 22dp of dead space and a duplicate of
-                // information the user has already learned.
-            }
+                InteractionTier.NOTIFICATION_CARDS -> {
+                    NotificationCardStack(
+                        emails = uiState.emails,
+                        highlightedId = uiState.highlightedNotificationId,
+                        tiltScrollDelta = tiltScrollDelta,
+                        onSelectEmail = onOpenFromNotification,
+                        onArchiveEmail = onArchiveEmail,
+                        onSnoozeEmail = onSnoozeEmail,
+                        onCollapseToHud = onCollapseFromNotifications,
+                        onExpandToInbox = onExpandToInbox,
+                        modifier = Modifier.fillMaxWidth().fillMaxHeight(),
+                    )
+                }
 
-            InteractionTier.INBOX -> {
-                Box(modifier = Modifier.fillMaxWidth().fillMaxHeight()) {
+                InteractionTier.INBOX -> {
                     InboxPanel(
                         emails = prioritySortedEmails,
                         selectedEmail = uiState.selectedEmail,
                         ttsState = ttsState,
                         ttsSummary = uiState.selectedEmail?.aiSummary ?: "",
                         tiltScrollDelta = tiltScrollDelta,
-                        onEmailSelected = onEmailSelected,
+                        activeMailbox = uiState.activeMailbox,
+                        onEmailSelected = onOpenFromNotification,
                         onArchive = onArchiveEmail,
                         onSnooze = onSnoozeEmail,
                         onCollapseToHud = onCollapseToHud,
                         onExpandToFocus = onExpandToFocus,
+                        onMailboxSelected = onMailboxSelected,
+                        modifier = Modifier.fillMaxSize(),
                     )
                 }
-            }
 
-            InteractionTier.FOCUS -> {
-                // Should never reach here — FOCUS suppresses the peripheral
-                // panel. Render nothing as a safety fallback.
+                InteractionTier.FOCUS -> {
+                    // Peripheral panel is hidden during FOCUS — render
+                    // nothing as a safety fallback.
+                }
             }
         }
 
@@ -670,7 +599,7 @@ private fun FallbackTierContent(
     voiceComposeState: VoiceComposeManager.ComposeState,
     voiceDraft: VoiceDraft?,
     closedFistProgress: Float,
-    pinchHoldProgress: Float,
+    reversePinchProgress: Float,
     onExpandToNotifications: () -> Unit,
     onCollapseFromNotifications: () -> Unit,
     onExpandToInbox: () -> Unit,
@@ -682,6 +611,7 @@ private fun FallbackTierContent(
     onSnoozeEmail: (Email) -> Unit,
     onDismissToast: () -> Unit,
     onToggleVoice: () -> Unit = {},
+    onMailboxSelected: (Mailbox) -> Unit = {},
 ) {
     Box(modifier = Modifier.fillMaxSize().padding(20.dp)) {
         Column(
@@ -720,7 +650,7 @@ private fun FallbackTierContent(
                 voiceComposeState = voiceComposeState,
                 voiceDraft = voiceDraft,
                 closedFistProgress = closedFistProgress,
-                pinchHoldProgress = pinchHoldProgress,
+                reversePinchProgress = reversePinchProgress,
                 onExpandToNotifications = onExpandToNotifications,
                 onCollapseFromNotifications = onCollapseFromNotifications,
                 onExpandToInbox = onExpandToInbox,
@@ -732,6 +662,7 @@ private fun FallbackTierContent(
                 onSnoozeEmail = onSnoozeEmail,
                 onDismissToast = onDismissToast,
                 onToggleVoice = onToggleVoice,
+                onMailboxSelected = onMailboxSelected,
             )
         }
     }

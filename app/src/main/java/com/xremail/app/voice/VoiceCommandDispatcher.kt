@@ -1,6 +1,5 @@
 package com.xremail.app.voice
 
-import android.util.Log
 import com.xremail.app.data.Email
 import com.xremail.app.data.EmailCategory
 import com.xremail.app.util.XrLog
@@ -35,7 +34,7 @@ class VoiceCommandDispatcher(
 ) {
 
     fun dispatch(command: EmailCommandTool.Command) {
-        Log.i(TAG, "dispatch: $command")
+        XrLog.i(TAG, "dispatch: $command")
         try {
             dispatchInner(command)
         } catch (t: Throwable) {
@@ -305,7 +304,7 @@ class VoiceCommandDispatcher(
                 viewModel.expandToFocus()
             }
             else -> {
-                Log.w(TAG, "expand_tier got unknown target='$rawTarget' — defaulting to INBOX")
+                XrLog.w(TAG, "expand_tier got unknown target='$rawTarget' — defaulting to INBOX")
                 viewModel.expandToInbox()
             }
         }
@@ -366,7 +365,7 @@ class VoiceCommandDispatcher(
             append("total=${state.emails.size}; ")
             append("unread=${state.emails.count { !it.isRead }}")
             if (sel != null) {
-                append("\nselected: from=${sel.sender}, subject=\"${sel.subject}\", priority=${sel.priority.name}")
+                append("\nselected: id=${sel.id}, from=${sel.sender}, subject=\"${sel.subject}\", priority=${sel.priority.name}")
                 append("\nselected_body: \"${bodyExcerpt(sel.body, MAX_SELECTED_BODY_CHARS)}\"")
             } else {
                 append("\nselected: none")
@@ -374,7 +373,7 @@ class VoiceCommandDispatcher(
             if (unreadTop.isNotEmpty()) {
                 append("\ntop unread:")
                 unreadTop.forEach { e ->
-                    append("\n  - from=${e.sender}, subject=\"${e.subject}\", priority=${e.priority.name}")
+                    append("\n  - id=${e.id}, from=${e.sender}, subject=\"${e.subject}\", priority=${e.priority.name}")
                     append("\n    body: \"${bodyExcerpt(e.body, MAX_LIST_BODY_CHARS)}\"")
                 }
             }

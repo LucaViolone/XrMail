@@ -36,6 +36,7 @@ data class EmailUiState(
     val selectedContact: Contact? = null,
     val mode: AppMode = AppMode.READING,
     val activeCategory: EmailCategory? = null,
+    val activeMailbox: Mailbox = Mailbox.INBOX,
     val isAiSummaryExpanded: Boolean = true,
     val unreadCount: Int = 0,
     val isLoading: Boolean = false,
@@ -66,11 +67,19 @@ class EmailViewModel(
     // Email loading
     // ---------------------------------------------------------------------------
 
-    fun loadEmails(query: String = "", category: EmailCategory? = null) {
+    fun loadEmails(
+        query: String = "",
+        category: EmailCategory? = null,
+        mailbox: Mailbox = _uiState.value.activeMailbox,
+    ) {
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, errorMessage = null) }
 
-            val result = repository.listEmails(query = query)
+            val labels = when (mailbox) {
+                Mailbox.INBOX -> listOf("INBOX")
+                Mailbox.SENT -> listOf("SENT")
+            }
+            val result = repository.listEmails(query = query, labels = labels)
 
             result.fold(
                 onSuccess = { emails ->
@@ -84,6 +93,7 @@ class EmailViewModel(
                             selectedEmail = filtered.firstOrNull()
                                 ?.also { loadContactFor(it) },
                             activeCategory = category,
+                            activeMailbox = mailbox,
                             unreadCount = filtered.count { !it.isRead },
                             isLoading = false,
                         )
@@ -335,6 +345,19 @@ class EmailViewModel(
         loadEmails(category = category)
     }
 
+    /**
+     * Switch between the Inbox and Sent mailbox views. Re-runs
+     * [loadEmails] so the list body swaps to the matching folder. The
+     * selected email is reset to the first in the new folder (or null if
+     * the folder is empty) to avoid showing a reader pane for a message
+     * that's no longer in the visible list.
+     */
+    fun selectMailbox(mailbox: Mailbox) {
+        if (_uiState.value.activeMailbox == mailbox) return
+        XrLog.i("EmailVM", "selectMailbox -> $mailbox")
+        loadEmails(mailbox = mailbox)
+    }
+
     fun prioritySortedEmails(): List<Email> {
         val priorityOrder = mapOf(
             Priority.HIGH to 0,
@@ -504,6 +527,11 @@ class EmailViewModel(
                             ),
                         )
                     }
+                    // Refresh whichever folder is currently visible so the
+                    // new Sent entry appears immediately if the user is on
+                    // the Sent tab (or already archived mutations to the
+                    // Inbox are re-reconciled otherwise).
+                    loadEmails()
                 },
                 onFailure = { err ->
                     XrLog.e("EmailVM", "sendEmail FAILED", err)

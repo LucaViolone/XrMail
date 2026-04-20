@@ -40,7 +40,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.clickable
 import com.xremail.app.data.Email
+import com.xremail.app.data.Mailbox
 import com.xremail.app.ui.inbox.EmailCard
 import com.xremail.app.ui.theme.XREmailColors
 import com.xremail.app.voice.TTSManager
@@ -54,11 +56,13 @@ fun InboxPanel(
     ttsState: TTSManager.PlaybackState,
     ttsSummary: String,
     tiltScrollDelta: Float,
+    activeMailbox: Mailbox,
     onEmailSelected: (Email) -> Unit,
     onArchive: (Email) -> Unit,
     onSnooze: (Email) -> Unit,
     onCollapseToHud: () -> Unit,
     onExpandToFocus: () -> Unit,
+    onMailboxSelected: (Mailbox) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val listState = rememberLazyListState()
@@ -99,11 +103,25 @@ fun InboxPanel(
                 )
             }
 
-            Text(
-                text = "Inbox",
-                style = MaterialTheme.typography.labelMedium,
-                color = XREmailColors.onSurfaceVariant,
-            )
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                listOf(Mailbox.INBOX to "Inbox", Mailbox.SENT to "Sent").forEach { (mailbox, label) ->
+                    val selected = mailbox == activeMailbox
+                    Text(
+                        text = label,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (selected) XREmailColors.primary
+                                else XREmailColors.onSurfaceVariant,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable { onMailboxSelected(mailbox) }
+                            .background(
+                                if (selected) XREmailColors.primary.copy(alpha = 0.14f)
+                                else XREmailColors.surfaceVariant.copy(alpha = 0.0f)
+                            )
+                            .padding(horizontal = 10.dp, vertical = 4.dp),
+                    )
+                }
+            }
 
             FilledIconButton(
                 onClick = onExpandToFocus,

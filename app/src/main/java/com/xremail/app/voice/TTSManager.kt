@@ -3,7 +3,7 @@ package com.xremail.app.voice
 import android.content.Context
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
-import android.util.Log
+import com.xremail.app.util.XrLog
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -52,11 +52,13 @@ class TTSManager(context: Context) {
                 tts?.setSpeechRate(1.15f)
                 tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                     override fun onStart(utteranceId: String?) {
+                        XrLog.i(TAG, "TTS onStart id=$utteranceId")
                         _playbackState.value = PlaybackState.PLAYING
                         _progress.value = 0f
                     }
 
                     override fun onDone(utteranceId: String?) {
+                        XrLog.i(TAG, "TTS onDone id=$utteranceId")
                         _playbackState.value = PlaybackState.IDLE
                         _progress.value = 1f
                         _finished.tryEmit(Unit)
@@ -64,21 +66,26 @@ class TTSManager(context: Context) {
 
                     @Deprecated("Deprecated in Java")
                     override fun onError(utteranceId: String?) {
+                        XrLog.w(TAG, "TTS onError (legacy) id=$utteranceId")
                         _playbackState.value = PlaybackState.IDLE
+                        _finished.tryEmit(Unit)
                     }
 
                     override fun onError(utteranceId: String?, errorCode: Int) {
+                        val name = ttsErrorName(errorCode)
+                        XrLog.w(TAG, "TTS onError id=$utteranceId code=$errorCode ($name)")
                         _playbackState.value = PlaybackState.IDLE
+                        _finished.tryEmit(Unit)
                     }
                 })
                 ready = true
-                Log.i(
+                XrLog.i(
                     TAG,
                     "TTS ready (engine=${tts?.defaultEngine}, " +
                         "voices=${tts?.voices?.size ?: 0})",
                 )
             } else {
-                Log.w(TAG, "TTS init failed: status=$status — retrying with system default")
+                XrLog.w(TAG, "TTS init failed: status=$status — retrying with system default")
                 // Retry without forcing an engine. Some OEM builds return
                 // ERROR for the engine-pinned constructor even when the
                 // engine package is installed (timing race during boot).
@@ -95,15 +102,24 @@ class TTSManager(context: Context) {
         tts = try {
             TextToSpeech(appContext, listener, GOOGLE_TTS_PACKAGE)
         } catch (t: Throwable) {
-            Log.w(TAG, "Google TTS engine unavailable, falling back to default", t)
+            XrLog.w(TAG, "Google TTS engine unavailable, falling back to default", t)
             TextToSpeech(appContext, listener)
         }
     }
 
     fun speak(text: String) {
-        if (!ready || text.isBlank()) return
+        if (!ready) {
+            XrLog.w(TAG, "speak() dropped — engine not ready yet; text=\"${text.take(120)}\"")
+            return
+        }
+        if (text.isBlank()) {
+            XrLog.w(TAG, "speak() dropped — blank text")
+            return
+        }
         currentText = text
-        tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, UTTERANCE_ID)
+        val rc = tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, UTTERANCE_ID) ?: -999
+        val rcName = if (rc == TextToSpeech.SUCCESS) "SUCCESS" else "ERROR($rc)"
+        XrLog.i(TAG, "speak len=${text.length} rc=$rcName text=\"$text\"")
     }
 
     fun pause() {
@@ -140,6 +156,17 @@ class TTSManager(context: Context) {
         } else if (isAttentive && _playbackState.value == PlaybackState.PAUSED) {
             resume()
         }
+    }
+
+    private fun ttsErrorName(code: Int): String = when (code) {
+        TextToSpeech.ERROR_SYNTHESIS -> "ERROR_SYNTHESIS"
+        TextToSpeech.ERROR_SERVICE -> "ERROR_SERVICE"
+        TextToSpeech.ERROR_OUTPUT -> "ERROR_OUTPUT"
+        TextToSpeech.ERROR_NETWORK -> "ERROR_NETWORK"
+        TextToSpeech.ERROR_NETWORK_TIMEOUT -> "ERROR_NETWORK_TIMEOUT"
+        TextToSpeech.ERROR_INVALID_REQUEST -> "ERROR_INVALID_REQUEST"
+        TextToSpeech.ERROR_NOT_INSTALLED_YET -> "ERROR_NOT_INSTALLED_YET"
+        else -> "UNKNOWN"
     }
 
     companion object {

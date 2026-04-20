@@ -35,6 +35,7 @@ import androidx.xr.compose.subspace.layout.width
 import com.xremail.app.data.Contact
 import com.xremail.app.data.Email
 import com.xremail.app.data.EmailCategory
+import com.xremail.app.data.Mailbox
 import com.xremail.app.ui.compose.ComposeScreen
 import com.xremail.app.ui.context.ContextSidebar
 import com.xremail.app.ui.inbox.InboxScreen
@@ -53,10 +54,12 @@ fun SpatialEmailLayout(
     selectedContact: Contact?,
     mode: AppMode,
     activeCategory: EmailCategory?,
+    activeMailbox: Mailbox,
     isAiSummaryExpanded: Boolean,
     unreadCount: Int,
     onEmailSelected: (Email) -> Unit,
     onCategorySelected: (EmailCategory?) -> Unit,
+    onMailboxSelected: (Mailbox) -> Unit,
     onToggleAiSummary: () -> Unit,
     onReply: () -> Unit,
     onArchive: () -> Unit,
@@ -89,8 +92,10 @@ fun SpatialEmailLayout(
                     emails = emails,
                     selectedEmail = selectedEmail,
                     activeCategory = activeCategory,
+                    activeMailbox = activeMailbox,
                     onEmailSelected = onEmailSelected,
                     onCategorySelected = onCategorySelected,
+                    onMailboxSelected = onMailboxSelected,
                 )
             }
 

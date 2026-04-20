@@ -21,31 +21,39 @@ import kotlinx.coroutines.launch
 
 private const val TAG = "HandGestures"
 
-// Tighter pinch threshold (was 0.04 = 4cm). Hand-tracking noise on Galaxy XR
-// would intermittently report thumb-index within 4cm even when the user's
-// hand was at rest, firing spurious PINCH_SELECT events. 2.5cm requires a
-// genuinely deliberate pinch.
-private const val PINCH_DISTANCE_THRESHOLD = 0.025f
-// Pinch-hold duration before we fire PINCH_HOLD_EXPAND (tier expansion).
-//
-// History: 600ms felt sluggish, dropped to 350ms for snappier feel — but
-// the user reported the HUD "opens without a gesture sometimes" with
-// the 350 setting. Diagnosis: 350ms is shorter than the time the user's
-// SECONDARY (non-dominant) hand spends in an incidental pinch-like pose
-// while holding a coffee, walking with arms swinging, gripping a phone,
-// etc. Thumb-index naturally sit within 2.5cm during plenty of unrelated
-// hand activity, and 350ms is well inside that envelope.
-//
-// 550ms is well past any incidental pose duration but still feels
-// responsive when the user is *intentionally* holding a deliberate
-// pinch ("I am doing a thing"). Combined with PINCH_TAP_MIN_HOLD_MS
-// filtering ghost pinches at the bottom, the false-positive rate
-// drops to near zero.
-private const val PINCH_HOLD_DURATION_MS = 550L
+// Pinch distance threshold — how close thumb-tip and index-tip must be
+// to count as "pinched". Tightened 2026-04-19 from 2.5cm → 2.1cm (15%
+// tighter) per user feedback that gestures were "slightly sensitive".
+// A tighter threshold means the user's thumb and index have to actually
+// TOUCH (or be within ~2mm) rather than just "close" — which reads as
+// more intentional.
+private const val PINCH_DISTANCE_THRESHOLD = 0.021f
 // Minimum pinch hold time before a release counts as PINCH_SELECT (tap).
-// Single-frame "ghost pinches" from tracking jitter clear in <50ms; a
-// deliberate tap is at least ~80ms. This filters out the noise.
-private const val PINCH_TAP_MIN_HOLD_MS = 80L
+// Bumped from 80ms → 92ms (15%) for more intent — a deliberate tap
+// still clears 92ms easily, but ghost-pinch single-frame flickers
+// (5-40ms) are now filtered further from the threshold.
+private const val PINCH_TAP_MIN_HOLD_MS = 92L
+
+// --- REVERSE-PINCH EXPAND ("open-fingered expansion") ------------------
+// Replaces the old 550-ms sustained PINCH_HOLD_EXPAND. The user's direct
+// feedback: "the open-fingered expansion gesture we had before" — a
+// thumb-and-index spread, possible with "less than 5 fingers" so no
+// full open-palm required. Gesture shape:
+//
+//   1. Thumb and index start within COMPRESSED_M of each other (i.e.
+//      the hand is in a pinched/closed starting pose).
+//   2. The user deliberately spreads them apart.
+//   3. When thumb-index distance crosses SPREAD_M within WINDOW_MS of
+//      the most recent compressed sample, REVERSE_PINCH_EXPAND fires.
+//
+// All three values tightened 15% on 2026-04-19: start more compressed
+// (2.6cm vs 3.0cm), end more spread (11.5cm vs 10.0cm), and complete
+// the motion faster (425ms vs 500ms). The combined effect is a gesture
+// that requires a genuine, deliberate "snap open" rather than any
+// gradual opening of the hand being interpreted as expand.
+private const val REVERSE_PINCH_COMPRESSED_M = 0.026f
+private const val REVERSE_PINCH_SPREAD_M = 0.115f
+private const val REVERSE_PINCH_WINDOW_MS = 425L
 // Air-swipe thresholds. RAISED from (0.08m, 0.15m/s) because the old
 // values detected "swipe" on the natural hand motion of a user walking
 // around — an arm swinging at a casual pace hits 15-30 cm/s with 8+ cm
@@ -71,51 +79,42 @@ private const val DEDUP_WINDOW_MS = 250L
 private const val CLOSED_FIST_DEDUP_WINDOW_MS = 1_500L
 
 // Closed-fist collapse — maximum distance from each fingertip to the
-// palm CENTER joint (HAND_JOINT_TYPE_PALM). LOOSENED from the original
-// 2.5cm: that threshold was effectively unsatisfiable on real hands
-// because the palm joint on Galaxy XR is the geometric center of the
-// metacarpal plate, not the surface of the palm. Even with a hard,
-// deliberate fist the fingertips wrap to the FRONT of the palm and end
-// up 3-5cm from the palm-center joint — measured directly on the
-// device. The original 2.5cm meant the gesture detected approximately
-// never, which is why "closed-fist hold doesn't collapse anything"
-// was the user-reported behaviour. 4.5cm catches any genuinely-curled
-// hand while staying tighter than a relaxed claw (relaxed-claw
-// fingertips sit 7-8cm from palm center).
-private const val CLOSED_FIST_FINGER_FOLD_MAX_M = 0.045f
-// In a real fist the thumb wraps OVER the curled fingers, so the
-// thumb-tip ends up close to the palm too (~3-4cm from the palm
-// SURFACE, ~5-6cm from the palm-center joint). A relaxed open hand
-// has the thumb sticking 8-10cm out from palm center. Bumped from
-// 4.5cm to 6.5cm for the same palm-center-vs-surface reason as the
-// finger threshold above — a thumb-tucked fist wraps around the front
-// so the thumb tip is closer to the front of the palm than to the
-// geometric center the joint reports.
-private const val CLOSED_FIST_THUMB_FOLD_MAX_M = 0.065f
-// Hold duration. Same target as the old open-palm-hold (600ms) — fast
-// enough to feel snappy, slow enough that incidental momentary fist-like
-// poses (gripping a coffee, holding a phone) don't sustain past it.
-private const val CLOSED_FIST_HOLD_DURATION_MS = 600L
+// palm CENTER joint (HAND_JOINT_TYPE_PALM). Tightened 2026-04-19 from
+// 6.0cm → 5.1cm (15% tighter) per user feedback on sensitivity: the
+// loose threshold was catching half-curled poses (e.g. hand relaxed
+// at side while walking) that didn't read as intentional fists. 5.1cm
+// still catches any genuinely deliberate fist while rejecting the
+// borderline incidental curls.
+private const val CLOSED_FIST_FINGER_FOLD_MAX_M = 0.051f
+// Thumb-to-palm trigger. Tightened from 8.5cm → 7.2cm (15%). Users who
+// don't tuck the thumb over the fingers now need to tuck it closer; a
+// floating thumb (hand just curled without a conscious "make a fist"
+// intent) falls outside the gate.
+private const val CLOSED_FIST_THUMB_FOLD_MAX_M = 0.072f
+// Hold duration. Bumped from 400ms → 460ms (15% longer) for more intent:
+// fleeting fist-like poses (e.g. hand briefly closing around a door
+// handle) are under 400ms end-to-end, so 460ms ensures only a sustained
+// deliberate clench fires. Still snappy — users won't notice the 60ms
+// difference when they're actually holding.
+private const val CLOSED_FIST_HOLD_DURATION_MS = 460L
 // Once CLOSED_FIST_HOLD fires we lock it out until the user opens the
 // hand again — without this, holding a fist for 2s fires once then
 // re-fires every dedup window as the timer keeps ticking. Lock releases
 // the moment ANY non-thumb fingertip extends past this threshold.
-// Bumped from 6cm to 8cm to match the loosened FOLD_MAX (the release
-// has to sit comfortably above the fold-detection threshold or
-// borderline finger positions oscillate the lockout flag every frame).
-private const val CLOSED_FIST_RELEASE_FINGER_EXTEND_M = 0.08f
+// Held at 11cm (NOT tightened with the 15% sweep) because the release
+// threshold sits above maintain — if we tightened this to ~9.4cm it
+// would start oscillating against a loosely-relaxed hand.
+private const val CLOSED_FIST_RELEASE_FINGER_EXTEND_M = 0.110f
 
 // Hysteresis: once a closed-fist has STARTED (fingers folded past the
 // trigger threshold), we keep the timer running as long as the hand
-// stays past this LOOSER "maintenance" threshold. Without hysteresis a
-// single frame of tracking jitter where a finger briefly extends past
-// CLOSED_FIST_FINGER_FOLD_MAX_M resets closedFistStartTimeMs, so the
-// 600ms hold never completes — the user reported this as "the gesture
-// is super delayed sometimes". 6cm is comfortably between the trigger
-// (4.5cm) and the release (8cm), so the timer survives noisy frames
-// but still drops if the user genuinely opens their hand.
-private const val CLOSED_FIST_MAINTAIN_FINGER_MAX_M = 0.06f
-private const val CLOSED_FIST_MAINTAIN_THUMB_MAX_M = 0.08f
+// stays past this LOOSER "maintenance" threshold. Tightened from
+// 7.5cm/10cm → 6.4cm/8.5cm (15%) to stay proportional to the tightened
+// trigger; the maintain band still sits between trigger and release
+// so jitter doesn't reset the timer, but slipping to a non-fist pose
+// drops it sooner.
+private const val CLOSED_FIST_MAINTAIN_FINGER_MAX_M = 0.064f
+private const val CLOSED_FIST_MAINTAIN_THUMB_MAX_M = 0.085f
 // Tracking-loss blips of <= this duration are treated as a continuation
 // of the previous gesture (we don't reset closedFistEmitted on loss). On
 // Galaxy XR a held gesture in front of the face often causes 1-3 frame
@@ -126,39 +125,57 @@ private const val CLOSED_FIST_MAINTAIN_THUMB_MAX_M = 0.08f
 private const val TRACKING_LOSS_GRACE_MS = 600L
 
 /**
- * Custom-gesture detector for the user's *secondary* hand only.
+ * Custom-gesture detector. Historically attached to the user's secondary
+ * (non-dominant) hand to avoid double-firing with OS gaze+pinch on the
+ * primary hand. Per the user's direct feedback ("all of it should be
+ * dominant hand") this now attaches to the DOMINANT / PRIMARY hand —
+ * the same hand the OS uses for gaze+pinch clicks. This is safe because:
  *
- * The Galaxy XR OS already routes pinch-on-the-primary-hand into Compose
- * pointer events on whatever the user is looking at — so attaching custom
- * gesture detection to the primary hand double-fires every system click
- * (this was the bug noted as G3 in the gap analysis). We therefore:
+ *   - PINCH_SELECT is a no-op in [GestureToActionMapper] everywhere. The
+ *     OS gaze+pinch path already delivers a Compose click on whatever
+ *     the user is looking at, which is the intended "select/open" path.
+ *     The custom PINCH_SELECT signal is kept only for logging + feedback
+ *     pill consistency.
+ *   - REVERSE_PINCH_EXPAND and CLOSED_FIST_HOLD_COLLAPSE are never
+ *     emitted by the OS, so they can't double-fire.
  *
+ * Attachment logic:
  *   1. Read [Hand.getPrimaryHandSide] from the OS at startup.
- *   2. Attach our custom-gesture state collector ONLY to the opposite hand.
- *   3. Ignore the primary hand entirely; OS gaze + pinch handle clicks.
+ *   2. Attach custom-gesture state collector to THAT hand (dominant).
+ *   3. If the side is UNKNOWN (emulator / headless test) attach to
+ *      both hands so manual testing still works.
  *
- * If the primary hand is unknown (emulator, headless test), we attach to
- * both hands so manual testing still works, and [activeSide] reports
- * `Hand.HandSide.UNKNOWN` so callers can show a debug banner.
+ * The class name is retained for git-blame stability; it's really
+ * "DominantHandGestures" in behavior now.
  */
 class SecondaryHandGestures {
 
     enum class Gesture {
         PINCH_SELECT,
-        PINCH_HOLD_EXPAND,
+        /**
+         * Reverse-pinch — thumb and index start close (the user is in a
+         * pinched starting pose) and then spread apart. Fires when
+         * thumb-index distance exceeds [REVERSE_PINCH_SPREAD_M] within
+         * [REVERSE_PINCH_WINDOW_MS] of a compressed sample.
+         *
+         * Replaced the previous PINCH_HOLD_EXPAND (a 550-ms sustained
+         * pinch) because "hold still" gestures are slow and ambiguous.
+         * A spread / reverse-pinch is the natural visual inverse of the
+         * closed-fist collapse — two fingers open outwards to open a
+         * tier, a whole hand closes to a fist to back out.
+         *
+         * Only two fingers are required (thumb + index). The user's
+         * feedback: "can be less than 5 fingers for expand, a reverse
+         * pinch with thumb and index should expand".
+         */
+        REVERSE_PINCH_EXPAND,
         /**
          * Closed-fist hold — all four non-thumb fingertips folded tight to
-         * the palm AND the thumb tucked over them, held for ~600ms.
-         * The intentional inverse of [PINCH_HOLD_EXPAND]: pinch-and-hold
-         * pushes deeper into the tier hierarchy, fist-and-hold pulls one
-         * tier back. Mapped per tier in
-         * [com.xremail.app.tracking.GestureToActionMapper].
-         *
-         * Replaced the previous OPEN_PALM_HOLD_COLLAPSE because an open
-         * palm is an extremely common incidental pose (waving, gesturing
-         * while talking, picking something up) and fired false collapses
-         * far more often than it fired intentional ones. A clenched fist
-         * with the thumb tucked is essentially never produced by accident.
+         * the palm AND the thumb tucked over them, held for
+         * [CLOSED_FIST_HOLD_DURATION_MS]. The intentional inverse of
+         * [REVERSE_PINCH_EXPAND]: open two fingers to push deeper into
+         * the tier hierarchy, close all fingers to pull one tier back.
+         * Mapped per tier in [GestureToActionMapper].
          */
         CLOSED_FIST_HOLD_COLLAPSE,
         SWIPE_LEFT_ARCHIVE,
@@ -190,21 +207,18 @@ class SecondaryHandGestures {
     val closedFistProgress: StateFlow<Float> = _closedFistProgress.asStateFlow()
 
     /**
-     * Live progress of the pinch "expand" hold, 0f → 1f. Mirrors
-     * [closedFistProgress] but for the expansion gesture — 0f when
-     * there is no active pinch, ramps up while the user holds thumb
-     * and index in contact, snaps to 1f the frame PINCH_HOLD_EXPAND
-     * fires, and drops back to 0f when the pinch releases.
+     * Live progress of the reverse-pinch "expand" gesture, 0f → 1f.
+     * Mirrors [closedFistProgress] but for the expansion gesture — 0f
+     * when the user isn't currently opening from a compressed pose,
+     * ramps up as thumb-index distance grows from
+     * [REVERSE_PINCH_COMPRESSED_M] toward [REVERSE_PINCH_SPREAD_M], and
+     * snaps to 1f the frame REVERSE_PINCH_EXPAND fires.
      *
-     * The expand path also supports a quick tap-style select
-     * (PINCH_SELECT) which is single-frame and not visualized; this
-     * progress flow only covers the HOLD path because that's the
-     * one with ambiguous duration where visible feedback helps
-     * ("am I holding long enough yet?"). Quick pinches don't need
-     * the ring because they resolve instantly.
+     * A quick PINCH_SELECT tap is single-frame and does NOT drive this
+     * ring — there's nothing to visualize for a tap.
      */
-    private val _pinchHoldProgress = MutableStateFlow(0f)
-    val pinchHoldProgress: StateFlow<Float> = _pinchHoldProgress.asStateFlow()
+    private val _reversePinchProgress = MutableStateFlow(0f)
+    val reversePinchProgress: StateFlow<Float> = _reversePinchProgress.asStateFlow()
 
     private var trackingJobs: List<Job> = emptyList()
     private val handStates = mutableMapOf<String, HandState>()
@@ -242,14 +256,17 @@ class SecondaryHandGestures {
         val left = Hand.left(session)
         val right = Hand.right(session)
 
-        // Choose the hand(s) to actually attach to. Custom gestures should
-        // ride the SECONDARY hand so they don't double-fire with OS pinch.
+        // Attach to the DOMINANT (primary) hand per user feedback. This is
+        // the same hand the OS uses for gaze+pinch, but PINCH_SELECT is
+        // a no-op in the mapper so there's no double-fire: the custom
+        // detector only meaningfully emits REVERSE_PINCH_EXPAND and
+        // CLOSED_FIST_HOLD_COLLAPSE, neither of which the OS ever fires.
         // On UNKNOWN we attach to both so emulator testing still works.
         val attachLeft: Boolean
         val attachRight: Boolean
         when (primarySide) {
-            Hand.HandSide.LEFT -> { attachLeft = false; attachRight = true }
-            Hand.HandSide.RIGHT -> { attachLeft = true; attachRight = false }
+            Hand.HandSide.LEFT -> { attachLeft = true; attachRight = false }
+            Hand.HandSide.RIGHT -> { attachLeft = false; attachRight = true }
             Hand.HandSide.UNKNOWN -> { attachLeft = true; attachRight = true }
         }
 
@@ -260,7 +277,7 @@ class SecondaryHandGestures {
                 XrLog.w(TAG, "wanted to attach to LEFT but Hand.left() returned null")
             } else {
                 handStates["L"] = HandState("L")
-                XrLog.i(TAG, "attaching custom-gesture collector -> LEFT hand (secondary)")
+                XrLog.i(TAG, "attaching custom-gesture collector -> LEFT hand (dominant)")
                 jobs += scope.launch {
                     left.state.collect { handState ->
                         processHandState(handState, handStates.getValue("L"))
@@ -274,7 +291,7 @@ class SecondaryHandGestures {
                 XrLog.w(TAG, "wanted to attach to RIGHT but Hand.right() returned null")
             } else {
                 handStates["R"] = HandState("R")
-                XrLog.i(TAG, "attaching custom-gesture collector -> RIGHT hand (secondary)")
+                XrLog.i(TAG, "attaching custom-gesture collector -> RIGHT hand (dominant)")
                 jobs += scope.launch {
                     right.state.collect { handState ->
                         processHandState(handState, handStates.getValue("R"))
@@ -295,7 +312,7 @@ class SecondaryHandGestures {
         handStates.values.forEach { it.reset() }
         handStates.clear()
         _closedFistProgress.value = 0f
-        _pinchHoldProgress.value = 0f
+        _reversePinchProgress.value = 0f
     }
 
     /**
@@ -387,6 +404,18 @@ class SecondaryHandGestures {
         // doesn't fire a stale PINCH_SELECT that would expand the tier
         // right after CLOSED_FIST_HOLD_COLLAPSE collapses it.
         detectPinch(pinchDistance, suppressPinch = fistNow, now = now, s = s)
+        // Reverse-pinch runs on the same thumb-index distance signal as
+        // pinch but looks for the OPENING transition (compressed sample
+        // in the recent past + current distance over SPREAD threshold).
+        // Fires REVERSE_PINCH_EXPAND. Suppressed when the hand is in a
+        // fist (we can't be opening FROM a pinch if we're curling INTO
+        // a fist).
+        detectReversePinch(
+            distance = pinchDistance,
+            suppressReverse = fistNow,
+            now = now,
+            s = s,
+        )
         // Closed-fist detection runs in parallel with pinch using the
         // same fistNow signal. The two gestures can't collide because a
         // held pinch satisfies "thumb close to index" but NOT "all four
@@ -420,7 +449,6 @@ class SecondaryHandGestures {
             s.isPinching = false
             s.pinchStartTimeMs = 0L
             s.pinchEmitted = false
-            if (_pinchHoldProgress.value != 0f) _pinchHoldProgress.value = 0f
             return
         }
         s.isPinching = distance < PINCH_DISTANCE_THRESHOLD
@@ -431,38 +459,108 @@ class SecondaryHandGestures {
             XrLog.v(TAG, "${s.label} pinch START distance=${"%.3f".format(distance)}m")
         }
 
-        if (s.isPinching && !s.pinchEmitted) {
-            val holdDuration = now - s.pinchStartTimeMs
-            // Drive the expand-affordance ring. Raw linear 0f → 1f over
-            // PINCH_HOLD_DURATION_MS — the ring composable smooths this
-            // with animateFloatAsState so we don't need to here.
-            _pinchHoldProgress.value =
-                (holdDuration.toFloat() / PINCH_HOLD_DURATION_MS).coerceIn(0f, 1f)
-            if (holdDuration >= PINCH_HOLD_DURATION_MS) {
-                XrLog.d(TAG, "${s.label} pinch HOLD ${holdDuration}ms -> PINCH_HOLD_EXPAND")
-                _pinchHoldProgress.value = 1f
-                emit(Gesture.PINCH_HOLD_EXPAND, s)
-                s.pinchEmitted = true
-            }
-        }
-
         if (!s.isPinching && wasPinching) {
             val held = now - s.pinchStartTimeMs
-            // Ring drops whether this ended as an emit or a sub-tap
-            // suppression — the pinch is over either way.
-            if (_pinchHoldProgress.value != 0f) _pinchHoldProgress.value = 0f
             if (!s.pinchEmitted) {
                 if (held < PINCH_TAP_MIN_HOLD_MS) {
-                    // Filter sub-80ms "ghost pinches" — these are tracking
-                    // jitter, not user intent. The user reported the HUD
-                    // "expanding without me doing a gesture" and these
-                    // single-frame pinch flickers were the cause.
+                    // Filter sub-80ms "ghost pinches" — tracking jitter,
+                    // not user intent.
                     XrLog.v(TAG, "${s.label} pinch RELEASE held=${held}ms -> SUPPRESSED (below tap min)")
                 } else {
                     XrLog.d(TAG, "${s.label} pinch RELEASE held=${held}ms -> PINCH_SELECT")
                     emit(Gesture.PINCH_SELECT, s)
                 }
             }
+        }
+    }
+
+    /**
+     * Reverse-pinch (open-fingered expand) detector. Fires
+     * [Gesture.REVERSE_PINCH_EXPAND] when the user's thumb-index distance
+     * transitions from a compressed pose
+     * (< [REVERSE_PINCH_COMPRESSED_M]) to a spread pose
+     * (> [REVERSE_PINCH_SPREAD_M]) within [REVERSE_PINCH_WINDOW_MS].
+     *
+     * The compressed prerequisite is what makes this distinct from "the
+     * hand is just relaxed with fingers naturally apart". Implemented by
+     * keeping a short rolling history of thumb-index distances and
+     * checking the min in the window — if the hand was ever compressed
+     * in the last [REVERSE_PINCH_WINDOW_MS] and is currently spread,
+     * fire.
+     *
+     * We set [HandState.pinchEmitted] after firing so the normal pinch-
+     * release path in [detectPinch] doesn't also fire a stale
+     * PINCH_SELECT on the way out of the compressed pose.
+     */
+    private fun detectReversePinch(
+        distance: Float,
+        suppressReverse: Boolean,
+        now: Long,
+        s: HandState,
+    ) {
+        if (suppressReverse) {
+            if (_reversePinchProgress.value != 0f) _reversePinchProgress.value = 0f
+            s.thumbIndexHistory.clear()
+            return
+        }
+
+        // Push current sample; prune anything outside the window.
+        s.thumbIndexHistory.add(now to distance)
+        while (s.thumbIndexHistory.isNotEmpty() &&
+            s.thumbIndexHistory.first().first < now - REVERSE_PINCH_WINDOW_MS
+        ) {
+            s.thumbIndexHistory.removeAt(0)
+        }
+
+        // Release lockout once the hand re-enters the compressed pose so
+        // a second deliberate reverse-pinch is allowed.
+        if (s.reversePinchEmitted && distance < REVERSE_PINCH_COMPRESSED_M) {
+            s.reversePinchEmitted = false
+            XrLog.v(TAG, "${s.label} reverse-pinch lockout released (hand re-compressed)")
+        }
+
+        if (s.reversePinchEmitted) {
+            if (_reversePinchProgress.value != 0f) _reversePinchProgress.value = 0f
+            return
+        }
+
+        val minInWindow = s.thumbIndexHistory.minOfOrNull { it.second } ?: distance
+        if (minInWindow < REVERSE_PINCH_COMPRESSED_M) {
+            val progress = ((distance - REVERSE_PINCH_COMPRESSED_M) /
+                (REVERSE_PINCH_SPREAD_M - REVERSE_PINCH_COMPRESSED_M))
+                .coerceIn(0f, 1f)
+            _reversePinchProgress.value = progress
+
+            if (distance > REVERSE_PINCH_SPREAD_M) {
+                XrLog.d(
+                    TAG,
+                    "${s.label} reverse-pinch FIRED spread=${"%.3f".format(distance)}m " +
+                        "minInWindow=${"%.3f".format(minInWindow)}m -> REVERSE_PINCH_EXPAND",
+                )
+                _reversePinchProgress.value = 1f
+                emit(Gesture.REVERSE_PINCH_EXPAND, s)
+                s.reversePinchEmitted = true
+                // Suppress the stale PINCH_SELECT that would otherwise
+                // fire when the thumb-index distance crosses back past
+                // PINCH_DISTANCE_THRESHOLD on the way out.
+                s.pinchEmitted = true
+                s.thumbIndexHistory.clear()
+            } else if (distance > REVERSE_PINCH_COMPRESSED_M &&
+                now - s.lastReverseDiagLogMs > 500L
+            ) {
+                // Diagnostic for "near-spread but didn't fire" — helps
+                // users calibrate the gesture without silently no-op'ing.
+                s.lastReverseDiagLogMs = now
+                XrLog.d(
+                    TAG,
+                    "${s.label} near-spread (NOT firing) " +
+                        "distance=${"%.3f".format(distance)}m " +
+                        "(need >${REVERSE_PINCH_SPREAD_M}m) " +
+                        "minInWindow=${"%.3f".format(minInWindow)}m",
+                )
+            }
+        } else {
+            if (_reversePinchProgress.value != 0f) _reversePinchProgress.value = 0f
         }
     }
 
@@ -509,7 +607,10 @@ class SecondaryHandGestures {
             thumbTipDistFromPalm < CLOSED_FIST_THUMB_FOLD_MAX_M * 1.5f
         if (!fistTrigger && nearFist && now - s.lastFistDiagLogMs > 500L) {
             s.lastFistDiagLogMs = now
-            XrLog.v(
+            // d-level (was v-level) so it shows up on default logcat
+            // filters. The fist gate is the most commonly-complained-
+            // about detector and has to be easy to triage.
+            XrLog.d(
                 TAG,
                 "${s.label} near-fist (NOT firing) " +
                     "fingers=${"%.3f".format(maxFingerDist)}m " +
@@ -654,9 +755,18 @@ class SecondaryHandGestures {
         var wasClosedFist = false
         var closedFistStartTimeMs = 0L
         var closedFistEmitted = false
-        // Throttle for the "near-fist (NOT firing)" diagnostic — see
-        // detectClosedFistHold. Plain wall-clock ms; 0 means never logged.
+        // Throttle for the "near-fist (NOT firing)" diagnostic.
         var lastFistDiagLogMs = 0L
+        // Throttle for the "near-spread (NOT firing)" diagnostic.
+        var lastReverseDiagLogMs = 0L
+        // Once REVERSE_PINCH_EXPAND fires, lock out until the hand
+        // re-enters the compressed pose so a sustained open hand
+        // doesn't re-fire every dedup window.
+        var reversePinchEmitted = false
+        // Rolling history of thumb-index distance samples within
+        // REVERSE_PINCH_WINDOW_MS. Used by detectReversePinch to check
+        // "was the hand compressed in the recent past".
+        val thumbIndexHistory = mutableListOf<Pair<Long, Float>>()
         val palmPositionHistory = mutableListOf<Pair<Long, Vector3>>()
 
         fun reset() {
@@ -667,6 +777,9 @@ class SecondaryHandGestures {
             closedFistStartTimeMs = 0L
             closedFistEmitted = false
             lastFistDiagLogMs = 0L
+            lastReverseDiagLogMs = 0L
+            reversePinchEmitted = false
+            thumbIndexHistory.clear()
             palmPositionHistory.clear()
         }
     }

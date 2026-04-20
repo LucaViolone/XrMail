@@ -6,6 +6,13 @@ enum class EmailCategory { PEOPLE, UPDATES, PROMOTIONS, NEWSLETTERS, TRANSACTION
 
 enum class EmailAction { READ_FULL, READ_SUMMARY, AUTO_ARCHIVE, NEEDS_REPLY }
 
+/**
+ * Which Gmail-style folder an email lives in. Mapped onto Gmail's
+ * INBOX/SENT labels on the backend; for mock mode it's the source of
+ * truth for the Inbox vs Sent tab switcher.
+ */
+enum class Mailbox { INBOX, SENT }
+
 data class Email(
     val id: String,
     val sender: String,
@@ -25,6 +32,7 @@ data class Email(
     val actionItems: List<ActionItem> = emptyList(),
     val attachments: List<Attachment> = emptyList(),
     val threadCount: Int = 1,
+    val mailbox: Mailbox = Mailbox.INBOX,
 )
 
 data class Contact(

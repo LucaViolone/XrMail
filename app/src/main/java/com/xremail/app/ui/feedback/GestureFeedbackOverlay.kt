@@ -130,7 +130,7 @@ private fun iconFor(gesture: SecondaryHandGestures.Gesture): ImageVector = when 
     SecondaryHandGestures.Gesture.SWIPE_UP_STAR -> Icons.Default.Star
     SecondaryHandGestures.Gesture.SWIPE_DOWN_DISMISS -> Icons.Default.KeyboardArrowDown
     SecondaryHandGestures.Gesture.PINCH_SELECT -> Icons.Default.TouchApp
-    SecondaryHandGestures.Gesture.PINCH_HOLD_EXPAND -> Icons.Default.OpenInFull
+    SecondaryHandGestures.Gesture.REVERSE_PINCH_EXPAND -> Icons.Default.OpenInFull
     // Closed fist = "go back / collapse". Closest material icon is the back arrow.
     SecondaryHandGestures.Gesture.CLOSED_FIST_HOLD_COLLAPSE -> Icons.Default.ArrowBack
 }
@@ -141,6 +141,6 @@ private fun labelFor(gesture: SecondaryHandGestures.Gesture): String = when (ges
     SecondaryHandGestures.Gesture.SWIPE_UP_STAR -> "Starred"
     SecondaryHandGestures.Gesture.SWIPE_DOWN_DISMISS -> "Dismissed"
     SecondaryHandGestures.Gesture.PINCH_SELECT -> "Select"
-    SecondaryHandGestures.Gesture.PINCH_HOLD_EXPAND -> "Expand"
+    SecondaryHandGestures.Gesture.REVERSE_PINCH_EXPAND -> "Expand"
     SecondaryHandGestures.Gesture.CLOSED_FIST_HOLD_COLLAPSE -> "Collapse"
 }

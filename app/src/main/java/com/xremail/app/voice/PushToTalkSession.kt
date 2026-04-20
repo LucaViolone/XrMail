@@ -84,6 +84,17 @@ class PushToTalkSession(
     private val _state = MutableStateFlow(State.IDLE)
     val state: StateFlow<State> = _state.asStateFlow()
 
+    /** Internal setter that logs every transition so we can scan logcat and
+     * reconstruct the turn even when outputs are missing. Keeps the chip
+     * state flow and the log line in sync — one source of truth. */
+    private fun setState(next: State, reason: String) {
+        val prev = _state.value
+        if (prev != next) {
+            XrLog.i(TAG, "state $prev -> $next ($reason)")
+        }
+        _state.value = next
+    }
+
     private val _lastError = MutableStateFlow<String?>(null)
     val lastError: StateFlow<String?> = _lastError.asStateFlow()
 
@@ -136,13 +147,13 @@ class PushToTalkSession(
             try {
                 ensureRecognizer()
                 roundActive = true
-                _state.value = State.LISTENING
+                setState(State.LISTENING, "start()")
                 recognizer?.startListening(buildRecognizeIntent())
                 XrLog.i(TAG, "PTT round started (recognizer=$usingComponentLabel)")
             } catch (t: Throwable) {
                 XrLog.e(TAG, "PTT start failed", t)
                 _lastError.value = t.message ?: t::class.simpleName
-                _state.value = State.ERROR
+                setState(State.ERROR, "start() threw")
                 roundActive = false
             }
         }
@@ -162,7 +173,7 @@ class PushToTalkSession(
             } catch (t: Throwable) {
                 XrLog.w(TAG, "stopListening threw: ${t.message}", t)
                 roundActive = false
-                _state.value = State.IDLE
+                setState(State.IDLE, "stop() threw")
             }
         }
     }
@@ -179,7 +190,7 @@ class PushToTalkSession(
             }
             recognizer = null
             roundActive = false
-            _state.value = State.IDLE
+            setState(State.IDLE, "shutdown()")
         }
         scope.cancel()
     }
@@ -298,11 +309,11 @@ class PushToTalkSession(
             if (transcript.isBlank()) {
                 XrLog.w(TAG, "onResults empty transcript")
                 _lastError.value = "Didn't catch that — tap and try again."
-                _state.value = State.IDLE
+                setState(State.IDLE, "empty transcript")
                 return
             }
             _lastTranscript.value = transcript
-            XrLog.i(TAG, "onResults FINAL: \"$transcript\"")
+            XrLog.i(TAG, "onResults FINAL (len=${transcript.length}): \"$transcript\"")
             handleTranscript(transcript)
         }
 
@@ -325,11 +336,11 @@ class PushToTalkSession(
             if (benign) {
                 XrLog.i(TAG, "recognizer onError=$name (benign — back to IDLE)")
                 _lastError.value = "Didn't catch that — tap and try again."
-                _state.value = State.IDLE
+                setState(State.IDLE, "recognizer $name")
             } else {
                 XrLog.w(TAG, "recognizer onError=$name")
                 _lastError.value = name
-                _state.value = State.ERROR
+                setState(State.ERROR, "recognizer $name")
             }
         }
     }
@@ -347,30 +358,36 @@ class PushToTalkSession(
         val withWake = "hey gemini $transcript"
         when (val parsed = CommandGrammar.parse(withWake)) {
             is CommandGrammar.Result.Dispatch -> {
-                XrLog.i(TAG, "local command matched: ${parsed.command}")
+                XrLog.i(TAG, "route=LOCAL grammar-match command=${parsed.command}")
                 try {
                     dispatchCommand(parsed.command)
                 } catch (t: Throwable) {
                     XrLog.e(TAG, "local dispatch threw", t)
                     _lastError.value = t.message ?: t::class.simpleName
-                    _state.value = State.ERROR
+                    setState(State.ERROR, "local dispatch threw")
                     return
                 }
                 // The dispatcher already speaks its own confirmation for
                 // most commands (via VoiceCommandDispatcher's TTS hooks),
                 // so we don't speak here — just drop back to IDLE.
-                _state.value = State.IDLE
+                setState(State.IDLE, "local dispatch ok")
             }
 
-            is CommandGrammar.Result.Escalate, CommandGrammar.Result.NotAddressed -> {
+            is CommandGrammar.Result.Escalate -> {
+                XrLog.i(TAG, "route=GEMINI (grammar escalate) utterance=\"$transcript\"")
+                escalateToGemini(transcript)
+            }
+            CommandGrammar.Result.NotAddressed -> {
+                XrLog.i(TAG, "route=GEMINI (grammar not-addressed) utterance=\"$transcript\"")
                 escalateToGemini(transcript)
             }
         }
     }
 
     private fun escalateToGemini(utterance: String) {
-        _state.value = State.THINKING
+        setState(State.THINKING, "escalate to gemini")
         replyJob?.cancel()
+        val startNanos = System.nanoTime()
         replyJob = scope.launch {
             val snapshot = try {
                 contextProvider().trim()
@@ -378,17 +395,28 @@ class PushToTalkSession(
                 XrLog.w(TAG, "contextProvider threw: ${t.message}", t)
                 ""
             }
+            XrLog.i(
+                TAG,
+                "gemini request: utterance=\"$utterance\" snapshot_len=${snapshot.length}",
+            )
+            // Full snapshot dumped at debug so it can be inspected via
+            // `adb logcat -s XrMail/PushToTalk:D` without spamming info.
+            XrLog.d(TAG, "gemini request snapshot=\n$snapshot")
             val result = gemini.reply(utterance = utterance, inboxSnapshot = snapshot)
+            val elapsedMs = (System.nanoTime() - startNanos) / 1_000_000
             result.onSuccess { reply ->
                 XrLog.i(
                     TAG,
-                    "gemini reply: text=\"${reply.spokenText.take(80)}\" commands=${reply.commands.size}",
+                    "gemini reply OK in ${elapsedMs}ms: commands=${reply.commands.size} " +
+                        "text_len=${reply.spokenText.length}",
                 )
-                reply.commands.forEach {
+                XrLog.i(TAG, "gemini reply text: \"${reply.spokenText}\"")
+                reply.commands.forEachIndexed { i, cmd ->
+                    XrLog.i(TAG, "gemini command[$i]: $cmd")
                     try {
-                        dispatchCommand(it)
+                        dispatchCommand(cmd)
                     } catch (t: Throwable) {
-                        XrLog.e(TAG, "gemini command dispatch threw for $it", t)
+                        XrLog.e(TAG, "gemini command dispatch threw for $cmd", t)
                     }
                 }
                 if (reply.spokenText.isNotBlank()) {
@@ -396,28 +424,75 @@ class PushToTalkSession(
                 } else if (reply.commands.isEmpty()) {
                     // Empty reply AND no commands — tell the user something
                     // went wrong so the chip doesn't silently slip to IDLE.
+                    XrLog.w(TAG, "gemini reply empty (no text, no commands)")
                     _lastError.value = "No response from Gemini — tap to retry."
-                    _state.value = State.ERROR
+                    setState(State.ERROR, "empty gemini reply")
                 } else {
-                    _state.value = State.IDLE
+                    // Commands-only reply — Gemini forgot to speak a
+                    // confirmation despite the prompt telling it to. Don't
+                    // leave the user wondering; synthesize a short audible
+                    // acknowledgement based on what we dispatched so the
+                    // tap-to-talk loop always gives feedback.
+                    val fallback = fallbackConfirmation(reply.commands)
+                    XrLog.i(TAG, "commands-only reply — falling back to: \"$fallback\"")
+                    speakThenIdle(fallback)
                 }
             }.onFailure { err ->
-                XrLog.w(TAG, "gemini reply failed: ${err.message}", err)
+                XrLog.w(TAG, "gemini reply FAILED in ${elapsedMs}ms: ${err.message}", err)
                 _lastError.value = err.message ?: err::class.simpleName ?: "Gemini error"
-                _state.value = State.ERROR
+                setState(State.ERROR, "gemini failure")
             }
         }
     }
 
+    /**
+     * Short spoken acknowledgement when Gemini dispatches one or more
+     * commands with no [ToolReply.spokenText]. Keeps the push-to-talk
+     * loop audibly closed so the user never sees the chip silently drop
+     * from THINKING back to IDLE. Intentionally generic — the UI shows
+     * the real state change, this is just "something happened".
+     */
+    private fun fallbackConfirmation(commands: List<EmailCommandTool.Command>): String {
+        if (commands.isEmpty()) return "Done."
+        return when (val first = commands.first()) {
+            is EmailCommandTool.Command.SelectEmail -> "Opening."
+            is EmailCommandTool.Command.ArchiveEmail -> "Archived."
+            is EmailCommandTool.Command.SnoozeEmail -> "Snoozed."
+            is EmailCommandTool.Command.ForwardEmail -> "Forwarding."
+            is EmailCommandTool.Command.Reply -> "Opening reply."
+            is EmailCommandTool.Command.Search -> "Searching."
+            is EmailCommandTool.Command.ReadAloud -> "Reading."
+            is EmailCommandTool.Command.Summarize -> "Summarizing."
+            is EmailCommandTool.Command.DraftReply -> "Drafted, want me to send it?"
+            is EmailCommandTool.Command.ReviseDraft -> "Updated."
+            EmailCommandTool.Command.CancelDraft -> "Discarded."
+            is EmailCommandTool.Command.SendDraft -> "Sent."
+            EmailCommandTool.Command.ArmSendForVoice -> "Ready."
+            is EmailCommandTool.Command.FilterCategory -> "Filtering."
+            EmailCommandTool.Command.ShowInbox -> "Opening inbox."
+            EmailCommandTool.Command.GoBack -> "Going back."
+            EmailCommandTool.Command.Refresh -> "Reset."
+            is EmailCommandTool.Command.Speak -> first.text.ifBlank { "Done." }
+            is EmailCommandTool.Command.ExpandTier -> "Expanding."
+            EmailCommandTool.Command.CollapseOneTier -> "Collapsing."
+            EmailCommandTool.Command.NextUnread -> "Next."
+            EmailCommandTool.Command.GetInboxState -> "Got it."
+        }
+    }
+
     private fun speakThenIdle(text: String) {
-        _state.value = State.SPEAKING
+        setState(State.SPEAKING, "tts start")
+        XrLog.i(TAG, "SPEAK: \"$text\"")
         tts.speak(text)
         speakWatcherJob?.cancel()
         speakWatcherJob = scope.launch {
             // Bound the wait so a stuck TTS can't pin the chip at SPEAKING.
-            withTimeoutOrNull(20_000L) { tts.finished.first() }
+            val completed = withTimeoutOrNull(20_000L) { tts.finished.first() }
+            if (completed == null) {
+                XrLog.w(TAG, "tts.finished timed out after 20s — forcing IDLE")
+            }
             if (_state.value == State.SPEAKING) {
-                _state.value = State.IDLE
+                setState(State.IDLE, "tts done")
             }
         }
     }

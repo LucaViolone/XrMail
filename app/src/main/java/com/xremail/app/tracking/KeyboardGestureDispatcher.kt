@@ -77,7 +77,7 @@ class KeyboardGestureDispatcher(
                 handGestures.simulateGesture(SecondaryHandGestures.Gesture.PINCH_SELECT); true
             }
             KeyEvent.KEYCODE_ENTER -> {
-                handGestures.simulateGesture(SecondaryHandGestures.Gesture.PINCH_HOLD_EXPAND); true
+                handGestures.simulateGesture(SecondaryHandGestures.Gesture.REVERSE_PINCH_EXPAND); true
             }
             KeyEvent.KEYCODE_P -> {
                 handGestures.simulateGesture(SecondaryHandGestures.Gesture.CLOSED_FIST_HOLD_COLLAPSE); true

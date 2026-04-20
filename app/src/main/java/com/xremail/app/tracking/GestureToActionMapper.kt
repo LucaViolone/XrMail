@@ -10,37 +10,29 @@ private const val TAG = "GestureMapper"
  * Context-aware gesture-to-action mapper. Routes the same physical gesture
  * to different ViewModel actions depending on the current InteractionTier.
  *
- * Tier escalation model (designed for walking/on-the-go use):
+ * Tier escalation model (post-2026-04-19 rewrite):
  *
- *   GLOBAL:
- *     CLOSED_FIST_HOLD_COLLAPSE = back-up one tier (the only collapse gesture).
+ *   GLOBAL (fires the same way regardless of tier):
+ *     REVERSE_PINCH_EXPAND         -> expandOneTier(tier) (open-fingered)
+ *     CLOSED_FIST_HOLD_COLLAPSE    -> collapseOneTier(tier) (closed fist)
  *
- *   AMBIENT_HUD:
- *     PINCH_HOLD_EXPAND  -> NOTIFICATION_CARDS
- *     (a direct pinch on the visible banner does the same via OS click)
+ *   PINCH_SELECT is a no-op in every tier. The OS gaze+pinch pipeline
+ *   already delivers a Compose click on whatever the user is looking at,
+ *   which is the real "select/open" path. The custom PINCH_SELECT event
+ *   is retained only for the confirmation pill — it must NEVER change
+ *   tier, otherwise any incidental pinch fires a phantom navigation.
  *
  *   NOTIFICATION_CARDS:
  *     direct pinch on a card -> FOCUS for that email (OS click)
- *     PINCH_HOLD_EXPAND      -> INBOX
- *     SWIPE_LEFT / RIGHT     -> archive / snooze the highlighted card
- *
  *   INBOX:
- *     direct pinch on a row -> FOCUS for that email (OS click)
- *     SWIPE_LEFT / RIGHT    -> archive / snooze selected
- *     SWIPE_DOWN_DISMISS    -> back to AMBIENT_HUD
- *
+ *     direct pinch on a row  -> FOCUS for that email (OS click)
+ *     SWIPE_DOWN_DISMISS     -> back to AMBIENT_HUD
  *   FOCUS:
- *     direct pinch in body -> standard interaction (OS click)
- *     SWIPE_DOWN_DISMISS   -> back to INBOX
+ *     SWIPE_DOWN_DISMISS     -> back to INBOX
+ *     direct pinch in body   -> standard interaction (OS click)
  *
- * IMPORTANT — what's intentionally NOT mapped:
- *   - Secondary-hand PINCH_SELECT in NOTIFICATION_CARDS / INBOX / FOCUS.
- *   - Secondary-hand PINCH_HOLD_EXPAND in INBOX / FOCUS.
- *   These were removed because they fired silently on incidental hand
- *   movements and made tier transitions feel random. Forward escalation
- *   from any non-ambient tier requires either a direct pinch on a visible
- *   target (gaze + pinch) or an explicit swipe — both of which the user
- *   can see they're doing.
+ * Air-swipe archive/snooze/star are intentionally unmapped: a single
+ * false positive silently destroys a message.
  */
 class GestureToActionMapper(
     private val viewModel: EmailViewModel,
@@ -48,13 +40,16 @@ class GestureToActionMapper(
 
     fun onGesture(gesture: SecondaryHandGestures.Gesture, tier: InteractionTier) {
         Log.d(TAG, "gesture=$gesture tier=$tier")
-        // CLOSED_FIST_HOLD_COLLAPSE is the universal "go back" — it's the
-        // gestural inverse of PINCH_HOLD_EXPAND and behaves the same way
-        // regardless of which tier we're in. Handling it here means we
-        // don't have to repeat the same case in every per-tier when().
-        if (gesture == SecondaryHandGestures.Gesture.CLOSED_FIST_HOLD_COLLAPSE) {
-            collapseOneTier(tier)
-            return
+        when (gesture) {
+            SecondaryHandGestures.Gesture.CLOSED_FIST_HOLD_COLLAPSE -> {
+                collapseOneTier(tier)
+                return
+            }
+            SecondaryHandGestures.Gesture.REVERSE_PINCH_EXPAND -> {
+                expandOneTier(tier)
+                return
+            }
+            else -> Unit
         }
         when (tier) {
             InteractionTier.AMBIENT_HUD -> handleAmbientGesture(gesture)
@@ -72,10 +67,9 @@ class GestureToActionMapper(
             }
             InteractionTier.INBOX -> {
                 Log.d(TAG, "  -> collapseToHud() (closed-fist, skipping cards)")
-                // From the user's perspective INBOX collapses straight back
-                // to the ambient banner, not to the cards (which are a
-                // peripheral preview, not a deeper state). Mirrors what
-                // SWIPE_DOWN_DISMISS does in the INBOX handler.
+                // INBOX collapses straight back to the ambient banner,
+                // not to the cards (which are a peripheral preview, not
+                // a deeper state). Mirrors SWIPE_DOWN_DISMISS.
                 viewModel.collapseToHud()
             }
             InteractionTier.NOTIFICATION_CARDS -> {
@@ -88,91 +82,62 @@ class GestureToActionMapper(
         }
     }
 
-    private fun handleAmbientGesture(gesture: SecondaryHandGestures.Gesture) {
-        // ONLY the deliberate long-pinch (PINCH_HOLD_EXPAND, ≥600ms held)
-        // expands. Short PINCH_SELECT taps are ignored here because
-        // hand-tracking flicker — a brief moment where thumb and index
-        // happen to be within the pinch threshold — was firing
-        // PINCH_SELECT and instantly expanding the HUD without the user
-        // having intended any gesture. The user still has the on-panel
-        // "Pinch to expand" tap target if they want quick expansion via
-        // direct interaction with the visible banner.
-        when (gesture) {
-            SecondaryHandGestures.Gesture.PINCH_HOLD_EXPAND -> {
-                Log.d(TAG, "  -> expandToNotificationCards() (PINCH_HOLD_EXPAND)")
+    private fun expandOneTier(tier: InteractionTier) {
+        when (tier) {
+            InteractionTier.AMBIENT_HUD -> {
+                Log.d(TAG, "  -> expandToNotificationCards() (reverse-pinch)")
                 viewModel.expandToNotificationCards()
             }
-            else -> { /* no-op in ambient — every other gesture suppressed */ }
+            InteractionTier.NOTIFICATION_CARDS -> {
+                Log.d(TAG, "  -> expandToInbox() (reverse-pinch)")
+                viewModel.expandToInbox()
+            }
+            InteractionTier.INBOX -> {
+                // INBOX → FOCUS needs a SPECIFIC email. The reverse-pinch
+                // has no gaze target of its own, so we fall back to
+                // opening the currently-selected email, if any. This is
+                // the natural match for "I was reading this row, now
+                // expand it to full focus".
+                val selected = viewModel.uiState.value.selectedEmail
+                if (selected != null) {
+                    Log.d(TAG, "  -> openFromNotification(${selected.id}) (reverse-pinch, selected row)")
+                    viewModel.openFromNotification(selected)
+                } else {
+                    Log.v(TAG, "  reverse-pinch in INBOX: no selected email, ignored")
+                }
+            }
+            InteractionTier.FOCUS -> {
+                Log.v(TAG, "  reverse-pinch in FOCUS: already at top tier, ignored")
+            }
+        }
+    }
+
+    private fun handleAmbientGesture(gesture: SecondaryHandGestures.Gesture) {
+        // All expansion from AMBIENT_HUD now flows through expandOneTier()
+        // via REVERSE_PINCH_EXPAND or via the banner's OS click path.
+        // PINCH_SELECT is deliberately a no-op so incidental pinches
+        // don't expand the HUD.
+        when (gesture) {
+            SecondaryHandGestures.Gesture.PINCH_SELECT -> {
+                Log.v(TAG, "  PINCH_SELECT in AMBIENT_HUD: no-op (OS gaze+pinch handles clicks)")
+            }
+            else -> Unit
         }
     }
 
     private fun handleNotificationCardsGesture(gesture: SecondaryHandGestures.Gesture) {
         when (gesture) {
-            // SECONDARY-HAND PINCH-SELECT IS DELIBERATELY NO-OP IN THIS TIER.
-            //
-            // Two reasons we used to handle it and now don't:
-            //
-            //   1. A pinch on a VISIBLE card already opens that card via the
-            //      OS gaze+pinch click pipeline (Modifier.clickable on
-            //      NotificationCardContent → openFromNotification → FOCUS).
-            //      Adding a redundant secondary-hand path means the same
-            //      pinch fires both, racing two tier transitions on the
-            //      same recomposition.
-            //
-            //   2. The fallback "no highlighted card → expand to INBOX"
-            //      branch was the user-reported "expanding and collapsing
-            //      at random times": any incidental secondary-hand pinch
-            //      (rummaging in a pocket, gesturing while talking) would
-            //      jump tiers without the user touching the UI.
-            //
-            // Tier escalation from NOTIFICATION_CARDS:
-            //   - Preferred path: OS gaze+pinch click on a card → opens
-            //     that specific card. Lives on the NotificationCard
-            //     Modifier.clickable.
-            //   - Fallback (this branch): if there IS a gaze-highlighted
-            //     card AND the OS click pipeline didn't fire (e.g. the
-            //     SwipeToDismissBox stole the pointer event, hand
-            //     tracking jitter put the click off the card surface,
-            //     etc.), open the highlighted card on a secondary-hand
-            //     PINCH_SELECT. The user explicitly reported "look at
-            //     a notification, pinch, nothing happens" — this is
-            //     the safety net so a near-miss still does the right
-            //     thing instead of feeling completely unresponsive.
-            //   - When NO card is highlighted (gaze isn't on the stack),
-            //     a secondary-hand pinch is suppressed — that branch
-            //     was the original "expanding at random times" bug.
+            // PINCH_SELECT is a no-op in this tier. The NotificationCard's
+            // own Modifier.clickable carries the open-on-pinch path via
+            // OS gaze+pinch. Firing a second custom handler here used to
+            // race two tier transitions on the same recomposition and was
+            // the root cause of "expanding and collapsing at random times".
             SecondaryHandGestures.Gesture.PINCH_SELECT -> {
-                val highlighted = viewModel.uiState.value.highlightedNotificationId
-                val email = viewModel.uiState.value.emails.find { it.id == highlighted }
-                if (email != null) {
-                    Log.d(TAG, "  -> openFromNotification(${email.id}) (PINCH_SELECT fallback for highlighted)")
-                    viewModel.openFromNotification(email)
-                } else {
-                    Log.v(TAG, "  PINCH_SELECT in NOTIFICATION_CARDS: ignored (no highlighted card)")
-                }
+                Log.v(TAG, "  PINCH_SELECT in NOTIFICATION_CARDS: no-op (card .clickable handles it)")
             }
-            SecondaryHandGestures.Gesture.PINCH_HOLD_EXPAND -> {
-                // Deliberate hold still takes you forward to INBOX so
-                // there's a hands-free escalation when no card is
-                // gaze-targeted.
-                Log.d(TAG, "  -> expandToInbox() (PINCH_HOLD_EXPAND)")
-                viewModel.expandToInbox()
-            }
-            // AIR-SWIPE ARCHIVE/SNOOZE/STAR DISABLED.
-            //
-            // Hand-tracking can't reliably distinguish "user swung their
-            // hand through the air as a gesture" from "user was just
-            // walking / gesturing while talking / shifting posture".
-            // The thresholds in SecondaryHandGestures were tightened
-            // considerably, but for DESTRUCTIVE actions (archive, snooze,
-            // star) no threshold is safe enough — one false positive means
-            // an email silently disappeared. The user directly reported
-            // this as "things are getting randomly archived and snoozed
-            // without intended actions".
-            //
-            // Archive/snooze/star are reachable via voice ("archive this",
-            // "snooze for an hour", "star this") and via the inbox panel's
-            // explicit buttons. Both are intentional by construction.
+            // Air-swipe archive/snooze/star disabled — hand tracking can't
+            // reliably separate a deliberate swipe from walking/gesturing,
+            // and one false positive silently destroys a message.
             SecondaryHandGestures.Gesture.SWIPE_LEFT_ARCHIVE -> {
                 Log.v(TAG, "  SWIPE_LEFT_ARCHIVE in NOTIFICATION_CARDS: ignored (use voice or tap)")
             }
@@ -180,51 +145,30 @@ class GestureToActionMapper(
                 Log.v(TAG, "  SWIPE_RIGHT_SNOOZE in NOTIFICATION_CARDS: ignored (use voice or tap)")
             }
             SecondaryHandGestures.Gesture.SWIPE_DOWN_DISMISS -> {
-                // Tier dismissal is non-destructive (user can always
-                // re-expand) so we KEEP the swipe-down path — but
-                // CLOSED_FIST_HOLD_COLLAPSE is the preferred collapse
-                // gesture. Air-swipe-down is a legacy fallback and
-                // SecondaryHandGestures thresholds are now tight enough
-                // that it takes a deliberate downward flick to fire.
-                Log.d(TAG, "  -> collapseFromNotificationCards()")
+                // Non-destructive tier dismiss — kept as a legacy fallback
+                // beside the primary closed-fist collapse.
+                Log.d(TAG, "  -> collapseFromNotificationCards() (swipe-down)")
                 viewModel.collapseFromNotificationCards()
             }
             SecondaryHandGestures.Gesture.SWIPE_UP_STAR -> {
                 Log.v(TAG, "  SWIPE_UP_STAR in NOTIFICATION_CARDS: ignored (use voice or tap)")
             }
-            // CLOSED_FIST_HOLD_COLLAPSE handled centrally in [onGesture];
-            // this case exists only to keep the when exhaustive.
+            // Global gestures handled in [onGesture] — exhaustive-when no-ops:
+            SecondaryHandGestures.Gesture.REVERSE_PINCH_EXPAND,
             SecondaryHandGestures.Gesture.CLOSED_FIST_HOLD_COLLAPSE -> Unit
         }
     }
 
     private fun handleInboxGesture(gesture: SecondaryHandGestures.Gesture) {
         when (gesture) {
-            // Air-swipe archive/snooze in INBOX is disabled for the same
-            // reason it's disabled in NOTIFICATION_CARDS — one false-
-            // positive swipe silently destroys a message. Voice commands
-            // ("archive this", "snooze") and the inbox buttons remain.
             SecondaryHandGestures.Gesture.SWIPE_LEFT_ARCHIVE -> {
                 Log.v(TAG, "  SWIPE_LEFT_ARCHIVE in INBOX: ignored (use voice or tap)")
             }
             SecondaryHandGestures.Gesture.SWIPE_RIGHT_SNOOZE -> {
                 Log.v(TAG, "  SWIPE_RIGHT_SNOOZE in INBOX: ignored (use voice or tap)")
             }
-            // Re-selecting the already-selected email did nothing useful and
-            // every accidental secondary-hand pinch in this tier was firing
-            // a recompose. Direct pinch-on-row in the inbox list is what
-            // selects an email.
             SecondaryHandGestures.Gesture.PINCH_SELECT -> {
-                Log.v(TAG, "  PINCH_SELECT in INBOX: ignored (use direct pinch on row)")
-            }
-            // PINCH_HOLD_EXPAND used to auto-jump to FOCUS, which made the
-            // inbox feel "haunted": any deliberate secondary-hand long-pinch
-            // (or even a slow accidental pinch-and-release) would silently
-            // throw the user into the full reader. Forward escalation from
-            // INBOX → FOCUS now happens via direct pinch on a row, which is
-            // intentional and visible.
-            SecondaryHandGestures.Gesture.PINCH_HOLD_EXPAND -> {
-                Log.v(TAG, "  PINCH_HOLD_EXPAND in INBOX: ignored (pinch a row to focus it)")
+                Log.v(TAG, "  PINCH_SELECT in INBOX: no-op (pinch a row via OS click to open)")
             }
             SecondaryHandGestures.Gesture.SWIPE_DOWN_DISMISS -> {
                 Log.d(TAG, "  -> collapseToHud()")
@@ -233,7 +177,7 @@ class GestureToActionMapper(
             SecondaryHandGestures.Gesture.SWIPE_UP_STAR -> {
                 Log.v(TAG, "  SWIPE_UP_STAR in INBOX: ignored (use voice or tap)")
             }
-            // CLOSED_FIST_HOLD_COLLAPSE handled centrally in [onGesture].
+            SecondaryHandGestures.Gesture.REVERSE_PINCH_EXPAND,
             SecondaryHandGestures.Gesture.CLOSED_FIST_HOLD_COLLAPSE -> Unit
         }
     }
@@ -244,19 +188,11 @@ class GestureToActionMapper(
                 Log.d(TAG, "  -> collapseToInbox()")
                 viewModel.collapseToInbox()
             }
-            // PINCH_HOLD_EXPAND used to "escape" out of FOCUS by collapsing
-            // to INBOX, which inverted the verb (`HOLD_EXPAND` doing a
-            // collapse) and was the most-reported "random collapse" — a
-            // small drift in the secondary hand during reading would yank
-            // the user back to the inbox list. Closed-fist-hold is the
-            // one and only collapse gesture now; pinch never collapses.
-            SecondaryHandGestures.Gesture.PINCH_HOLD_EXPAND -> {
-                Log.v(TAG, "  PINCH_HOLD_EXPAND in FOCUS: ignored (closed-fist-hold collapses)")
-            }
             SecondaryHandGestures.Gesture.PINCH_SELECT -> {
-                /* standard select — handled by existing panel tap */
+                // Standard select — OS gaze+pinch already delivered a
+                // Compose click to the focused panel; nothing to do here.
             }
-            else -> { /* no-op in focus */ }
+            else -> Unit
         }
     }
 }
