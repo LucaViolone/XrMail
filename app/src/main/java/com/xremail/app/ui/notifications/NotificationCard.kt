@@ -10,8 +10,6 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -37,7 +35,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -82,9 +79,23 @@ fun NotificationCard(
         }
     )
 
+    // CRITICAL: the clickable WRAPS the SwipeToDismissBox here (not the
+    // inner content). SwipeToDismissBox's AnchoredDraggable installs a
+    // pointer-input modifier that consumes the gaze+pinch DOWN event
+    // before it can reach a clickable child — the user reported this
+    // as "pinching to click doesn't open or expand anything" on the
+    // notification cards. With the clickable on the outside, the OS
+    // gaze+pinch click pipeline lands ON the outer Modifier and fires
+    // before the dismiss state ever sees the pointer. Drag still works
+    // because horizontal motion bypasses the simple-click recognizer.
+    androidx.compose.foundation.layout.Box(
+        modifier = modifier
+            .scale(highlightScale)
+            .clickable(onClick = onSelect),
+    ) {
     SwipeToDismissBox(
         state = dismissState,
-        modifier = modifier.scale(highlightScale),
+        modifier = Modifier,
         backgroundContent = {
             val direction = dismissState.dismissDirection
             val bgColor by animateColorAsState(
@@ -127,13 +138,14 @@ fun NotificationCard(
             onClick = onSelect,
         )
     }
+    }
 }
 
 @Composable
 private fun NotificationCardContent(
     email: Email,
     isHighlighted: Boolean,
-    onClick: () -> Unit,
+    @Suppress("UNUSED_PARAMETER") onClick: () -> Unit,
 ) {
     val priorityColor = when (email.priority) {
         Priority.HIGH -> XREmailColors.priorityHigh
@@ -143,32 +155,27 @@ private fun NotificationCardContent(
     }
 
     // PINCH-TO-OPEN: a single deliberate pinch on a card opens that email
-    // straight into FOCUS view. Earlier we required a long-press to filter
-    // ghost pinches from hand-tracking jitter, but with the tightened
-    // SecondaryHandGestures thresholds (PINCH_DISTANCE_THRESHOLD=2.5cm +
-    // 80ms minimum hold for taps), incidental pinches almost never fire
-    // anymore. Restoring single-pinch makes "look at email -> pinch ->
-    // see it big" feel like one fluid motion instead of two distinct
-    // steps, which is what the user asked for.
-    val interactionSource = remember { MutableInteractionSource() }
-    val isPressed by interactionSource.collectIsPressedAsState()
-
+    // straight into FOCUS view. The actual click handler now lives on
+    // the OUTER NotificationCard wrapper (above the SwipeToDismissBox)
+    // so the gaze+pinch event lands BEFORE the dismiss draggable can
+    // consume it — see the long comment in NotificationCard for why.
+    // The `onClick` parameter is kept in the signature to avoid churning
+    // the call sites that currently pass it through.
     val bgColor = when {
-        isPressed -> XREmailColors.surfaceElevated
         isHighlighted -> XREmailColors.surfaceElevated
         else -> XREmailColors.surfaceVariant.copy(alpha = 0.85f)
     }
 
+    // INNER clickable removed — the parent Box (in NotificationCard
+    // above) is now the click target so it lands BEFORE the
+    // SwipeToDismissBox's pointer-consuming draggable. Keeping a
+    // second clickable here would race the outer one on every touch
+    // and recompose, with one of them winning at random.
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
             .background(bgColor)
-            .clickable(
-                interactionSource = interactionSource,
-                indication = null,
-                onClick = onClick,
-            )
             .padding(horizontal = 12.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

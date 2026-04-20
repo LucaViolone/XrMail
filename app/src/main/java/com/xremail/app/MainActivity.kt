@@ -258,11 +258,60 @@ private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
         if (micGranted) {
             geminiLive.setContextProvider { voiceDispatcher.currentContextSummary() }
             geminiLive.connect(scope)
+        } else {
+            // Mic permission denied / not yet granted is the single
+            // most common reason Gemini "does nothing" — without RECORD_AUDIO
+            // the connect() call is skipped entirely and the user sees
+            // a permanently-CONNECTING-or-DISCONNECTED voice indicator
+            // with no explanation. Surface it.
+            viewModel.showError(
+                "Voice",
+                "Mic permission required for Gemini. Tap the system prompt to allow.",
+            )
         }
     }
     DisposableEffect(geminiLive) {
         onDispose { geminiLive.disconnect() }
     }
+
+    // ---------------------------------------------------------------------------
+    // "Nothing fails silently" — central error observer.
+    //
+    // Every voice-pipeline component that can fail exposes a `lastError`
+    // StateFlow; we collect them all here and pipe non-null updates into
+    // the ViewModel's toast channel so the user actually SEES failures
+    // instead of pressing buttons that quietly do nothing.
+    //
+    // The components also write their own XrLog lines on failure (see
+    // GeminiLiveManager.connect / summon, LocalCommandRecognizer.start
+    // / startListeningRound, etc.) so the same failure shows up both in
+    // logcat for us and in a toast for the user.
+    //
+    // distinctUntilChanged + filterNotNull guards against re-toasting
+    // the same error every recomposition.
+    // ---------------------------------------------------------------------------
+    LaunchedEffect(geminiLive, viewModel) {
+        // StateFlow already de-dupes consecutive equal values; no
+        // distinctUntilChanged needed.
+        geminiLive.lastError.collect { err ->
+            if (err != null) {
+                viewModel.showError("Gemini", err)
+            }
+        }
+    }
+    LaunchedEffect(geminiLive, viewModel) {
+        geminiLive.state
+            .map { it == GeminiLiveManager.SessionState.ERROR }
+            .distinctUntilChanged()
+            .collect { isError ->
+                if (isError) {
+                    val detail = geminiLive.lastError.value ?: "session error (no detail)"
+                    viewModel.showError("Gemini", "voice session failed — $detail")
+                }
+            }
+    }
+    // localCommands.lastError observer is below where the recognizer
+    // is actually constructed (search for "Local-first voice path").
 
     // ---------------------------------------------------------------------------
     // Local-first voice path — replaces the old wake-word + always-on Gemini
@@ -321,6 +370,17 @@ private fun HeadsetEmailApp(factory: EmailViewModel.Factory) {
     }
     DisposableEffect(localCommands) {
         onDispose { localCommands.stop() }
+    }
+
+    // Surface local-recognizer failures via the central toast channel.
+    // The recognizer is currently kill-switched (see
+    // ALWAYS_ON_LOCAL_VOICE_ENABLED) so this should never fire today,
+    // but wiring it up means re-enabling wake-word later doesn't
+    // reintroduce silent failure.
+    LaunchedEffect(localCommands, viewModel) {
+        localCommands.lastError.collect { err ->
+            if (err != null) viewModel.showError("Wake-word", err)
+        }
     }
 
     // Coordinate the recognizer with Gemini's mic ownership. SAME contract

@@ -9,16 +9,13 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Mic
@@ -66,21 +63,27 @@ fun AmbientHud(
     onDismissToast: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // Visual chrome stripped here on 2026-04-19: this Column used to wrap
+    // everything in its own Surface (rounded corner + alpha background +
+    // 16dp padding) on top of the SpatialPanel's outer Surface AND the
+    // NotificationBanner's own Surface — three nested rounded panels with
+    // ~70dp of cumulative padding between the panel edge and the actual
+    // notification text. The user described it as "a huge outline over
+    // notifications that's just a ton of extra space". Now we're a
+    // minimal Column that delegates the background/shape/padding to the
+    // outer SpatialPanel.
     Column(
-        modifier = modifier
-            .width(360.dp)
-            .clip(RoundedCornerShape(20.dp))
-            .background(XREmailColors.surface.copy(alpha = 0.95f))
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.End,
-        ) {
-            VoiceStatusIndicator(voiceState = voiceState)
-        }
+        // Voice status (mic icon, only visible when LISTENING/CONNECTING)
+        // is now overlaid in the same row as the banner via a small
+        // top-aligned indicator — no dedicated row taking 16dp vertical
+        // when the indicator is invisible (which is most of the time).
+        VoiceStatusIndicator(
+            voiceState = voiceState,
+            modifier = Modifier.align(Alignment.End),
+        )
 
         NotificationBanner(
             emails = emails,

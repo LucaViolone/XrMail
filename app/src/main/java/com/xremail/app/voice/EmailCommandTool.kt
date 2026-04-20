@@ -68,6 +68,14 @@ object EmailCommandTool {
          * [com.xremail.app.viewmodel.EmailViewModel.navigateNextUnread].
          */
         data object NextUnread : Command()
+        /**
+         * Synthetic command — emitted INTO the dispatcher when Gemini
+         * calls `get_inbox_state`. Doesn't change UI state; the
+         * dispatcher returns the inbox snapshot via FunctionResponsePart
+         * so the model can answer content questions in the same turn.
+         * See [GeminiLiveManager.handleFunctionCall].
+         */
+        data object GetInboxState : Command()
     }
 
     // ---------------------------------------------------------------------------
@@ -236,6 +244,31 @@ object EmailCommandTool {
     )
 
     /**
+     * On-demand inbox snapshot. The model calls this whenever the user
+     * asks ANYTHING about email content (who emailed, what they said,
+     * subjects, summaries, etc.). Returns a short formatted string with
+     * the unread emails and brief body excerpts.
+     *
+     * Why a tool instead of pushing context at session start:
+     * - Inbox changes (new emails, archives) — pushing once gets stale.
+     * - The Gemini Live SDK's `sendTextRealtime` and `send(content(role=
+     *   model))` paths both fail unreliably on Galaxy XR's WebSocket
+     *   handshake timing, leaving the model ungrounded.
+     * - A tool call is the documented, reliable way to inject dynamic
+     *   context — it costs ~200ms but always works.
+     */
+    private val getInboxState = FunctionDeclaration(
+        "get_inbox_state",
+        "Fetch the current inbox snapshot — sender names, subjects, " +
+            "and short body excerpts of every unread email. " +
+            "ALWAYS call this BEFORE answering any question about email " +
+            "content (who emailed, what they said, subjects, summaries, " +
+            "what's in the inbox). Don't guess from memory — the inbox " +
+            "changes every minute, only this tool returns ground truth.",
+        emptyMap(),
+    )
+
+    /**
      * Tools the model sees on each turn. Smaller is faster — every
      * declaration here costs prompt-prefill tokens and ambiguity for the
      * model to disambiguate between similar options.
@@ -253,6 +286,7 @@ object EmailCommandTool {
      */
     val tool: Tool = Tool.functionDeclarations(
         listOf(
+            getInboxState,
             selectEmail, archiveEmail, snoozeEmail, forwardEmail, reply, search,
             readAloud, summarize, draftReply, reviseDraft, cancelDraft, sendDraft,
             filterCategory, refresh, expandTier, collapseOneTier,
@@ -283,6 +317,7 @@ object EmailCommandTool {
         "speak" -> args["text"]?.let { Command.Speak(it) }
         "expand_tier" -> args["target"]?.let { Command.ExpandTier(it) }
         "collapse_one_tier" -> Command.CollapseOneTier
+        "get_inbox_state" -> Command.GetInboxState
         else -> null
     }
 }

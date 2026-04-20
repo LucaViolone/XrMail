@@ -28,8 +28,14 @@ class VoiceCommandDispatcher(
             // Never let a bad command handler take down the voice pipeline —
             // a thrown exception here would propagate up through the commands
             // SharedFlow collector in MainActivity and kill the session.
-            Log.e(TAG, "dispatch failed for $command", t)
-            tts.speak("Something went wrong.")
+            // Visible feedback path: user-facing toast (so the failure
+            // isn't a silent no-op) PLUS spoken phrase (so they hear it
+            // hands-free) PLUS detailed XrLog (for adb post-mortem).
+            val cmdName = command::class.simpleName ?: "command"
+            val msg = t.message ?: t::class.simpleName ?: "unknown error"
+            XrLog.e(TAG, "dispatch failed for $command: $msg", t)
+            viewModel.showError("Voice", "$cmdName failed: $msg", t)
+            tts.speak("Sorry, that command failed.")
             viewModel.refreshUi()
         }
     }
@@ -132,6 +138,13 @@ class VoiceCommandDispatcher(
             EmailCommandTool.Command.NextUnread -> {
                 XrLog.v(TAG, "navigateNextUnread() (voice 'next')")
                 viewModel.navigateNextUnread()
+            }
+
+            EmailCommandTool.Command.GetInboxState -> {
+                // No UI side-effect — the actual response is returned to
+                // Gemini through GeminiLiveManager.handleFunctionCall,
+                // which calls currentContextSummary() directly.
+                XrLog.v(TAG, "get_inbox_state: dispatch no-op (response returned via tool channel)")
             }
         }
     }

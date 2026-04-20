@@ -125,11 +125,31 @@ class GestureToActionMapper(
             //      (rummaging in a pocket, gesturing while talking) would
             //      jump tiers without the user touching the UI.
             //
-            // Tier escalation from NOTIFICATION_CARDS now requires either
-            // an explicit pinch on a card (OS click) or the
-            // PINCH_HOLD_EXPAND deliberate hold (still mapped below).
+            // Tier escalation from NOTIFICATION_CARDS:
+            //   - Preferred path: OS gaze+pinch click on a card → opens
+            //     that specific card. Lives on the NotificationCard
+            //     Modifier.clickable.
+            //   - Fallback (this branch): if there IS a gaze-highlighted
+            //     card AND the OS click pipeline didn't fire (e.g. the
+            //     SwipeToDismissBox stole the pointer event, hand
+            //     tracking jitter put the click off the card surface,
+            //     etc.), open the highlighted card on a secondary-hand
+            //     PINCH_SELECT. The user explicitly reported "look at
+            //     a notification, pinch, nothing happens" — this is
+            //     the safety net so a near-miss still does the right
+            //     thing instead of feeling completely unresponsive.
+            //   - When NO card is highlighted (gaze isn't on the stack),
+            //     a secondary-hand pinch is suppressed — that branch
+            //     was the original "expanding at random times" bug.
             SecondaryHandGestures.Gesture.PINCH_SELECT -> {
-                Log.v(TAG, "  PINCH_SELECT in NOTIFICATION_CARDS: ignored (use direct pinch on card)")
+                val highlighted = viewModel.uiState.value.highlightedNotificationId
+                val email = viewModel.uiState.value.emails.find { it.id == highlighted }
+                if (email != null) {
+                    Log.d(TAG, "  -> openFromNotification(${email.id}) (PINCH_SELECT fallback for highlighted)")
+                    viewModel.openFromNotification(email)
+                } else {
+                    Log.v(TAG, "  PINCH_SELECT in NOTIFICATION_CARDS: ignored (no highlighted card)")
+                }
             }
             SecondaryHandGestures.Gesture.PINCH_HOLD_EXPAND -> {
                 // Deliberate hold still takes you forward to INBOX so

@@ -127,6 +127,19 @@ class LocalCommandRecognizer(
     private var lastDispatchedAtMs: Long = 0L
 
     fun start() {
+        if (!ALWAYS_ON_LOCAL_VOICE_ENABLED) {
+            // Kill switch: the system SpeechRecognizer plays a "ding"
+            // earcon at the start of every listening round, and our
+            // [muteRecognizerEarconAroundStart] volume-juggling trick
+            // doesn't reliably catch it on every Galaxy XR build —
+            // resulting in a beep every ~5 s while the always-on loop
+            // re-arms after each NO_MATCH. Until the earcon suppression
+            // is bulletproof, default to OFF; the user can still tap
+            // the mic to summon Gemini Live.
+            XrLog.i(TAG, "always-on local voice disabled (ALWAYS_ON_LOCAL_VOICE_ENABLED=false)")
+            _state.value = State.IDLE
+            return
+        }
         if (_state.value == State.LISTENING || _state.value == State.STARTING) return
         _lastError.value = null
         runOnMainThread {
@@ -158,6 +171,16 @@ class LocalCommandRecognizer(
     }
 
     fun resume() {
+        // Hard kill-switch check: if the always-on loop is disabled at
+        // build time, never RESUME into a listening round even if some
+        // observer flips state to PAUSED. The user reported a persistent
+        // beep that we're traced back to the recognizer's start earcon —
+        // until that's fully suppressed on every Galaxy XR firmware,
+        // any path that lands in startListeningRound is a regression.
+        if (!ALWAYS_ON_LOCAL_VOICE_ENABLED) {
+            XrLog.v(TAG, "resume() ignored — ALWAYS_ON_LOCAL_VOICE_ENABLED=false")
+            return
+        }
         if (_state.value != State.PAUSED) return
         runOnMainThread {
             try {
@@ -276,6 +299,17 @@ class LocalCommandRecognizer(
     }
 
     private fun startListeningRound() {
+        // Final defense line: even if some code path reaches here past
+        // the kill switch in start()/resume(), refuse to actually call
+        // SpeechRecognizer.startListening — that's the call that
+        // triggers Google's start-of-listening earcon (the "ding" the
+        // user has been hearing every ~5s). Cheap to check, expensive
+        // to forget.
+        if (!ALWAYS_ON_LOCAL_VOICE_ENABLED) {
+            XrLog.v(TAG, "startListeningRound() refused — ALWAYS_ON_LOCAL_VOICE_ENABLED=false")
+            _state.value = State.IDLE
+            return
+        }
         // Only the first round (cold-start STARTING) needs the bind
         // health-check watchdog. Once we've seen a successful
         // onReadyForSpeech and promoted to LISTENING, future rounds
@@ -337,22 +371,43 @@ class LocalCommandRecognizer(
      * one device-specific build may still beep.
      */
     private inline fun muteRecognizerEarconAroundStart(block: () -> Unit) {
+        // Streams the earcon could possibly route through. The big find on
+        // Galaxy XR is STREAM_ASSISTANT (constant 11) — Samsung's recognizer
+        // pipes its start-of-listening tone through the dedicated assistant
+        // stream that wasn't a public AudioManager constant for a long time
+        // (and still isn't on every API level), which is why our previous
+        // SYSTEM+MUSIC mute didn't suppress anything. We hit it by integer.
+        //
         // STREAM_RING and STREAM_NOTIFICATION are intentionally absent —
-        // mutating them requires NotificationPolicy access (Do Not Disturb
-        // permission) which we don't have and don't want to ask for. The
-        // recognizer earcon on Galaxy XR plays through STREAM_MUSIC (the
-        // media stream that Google's Assistant earcons route through),
-        // so STREAM_SYSTEM + STREAM_MUSIC is sufficient in practice.
+        // mutating them requires NotificationPolicy access (DND permission)
+        // which we don't hold. STREAM_ALARM and STREAM_ACCESSIBILITY refuse
+        // to go to 0 (min is 1), so we set those to 1 instead, which is
+        // inaudible enough to swallow a 150-ms tone in practice.
         val streams = intArrayOf(
             AudioManager.STREAM_SYSTEM,
             AudioManager.STREAM_MUSIC,
+            STREAM_ASSISTANT, // 11 — the actual culprit on Galaxy XR
+            AudioManager.STREAM_DTMF,
+            AudioManager.STREAM_ACCESSIBILITY, // min volume 1, not 0
+            AudioManager.STREAM_ALARM,         // min volume 1, not 0
+            // STREAM_VOICE_CALL would be ideal too, but setting it requires
+            // MODIFY_PHONE_STATE — a system-signature permission a user
+            // app can't hold. The recognizer earcon doesn't actually route
+            // through it on Galaxy XR (we confirmed from AHAL traces), so
+            // dropping it is harmless and silences the runtime warning.
         )
         val savedVolumes = IntArray(streams.size)
         for (i in streams.indices) {
             try {
                 savedVolumes[i] = audioManager.getStreamVolume(streams[i])
-                if (savedVolumes[i] > 0) {
-                    audioManager.setStreamVolume(streams[i], 0, 0)
+                // STREAM_ALARM and STREAM_ACCESSIBILITY refuse to go to 0
+                // (they enforce a min of 1). Everything else accepts 0.
+                val targetMute = if (
+                    streams[i] == AudioManager.STREAM_ALARM ||
+                    streams[i] == AudioManager.STREAM_ACCESSIBILITY
+                ) 1 else 0
+                if (savedVolumes[i] > targetMute) {
+                    audioManager.setStreamVolume(streams[i], targetMute, 0)
                 }
             } catch (t: Throwable) {
                 XrLog.v(TAG, "couldn't snapshot/mute stream=${streams[i]}: ${t.message}")
@@ -364,9 +419,11 @@ class LocalCommandRecognizer(
             mainHandler.postDelayed({
                 for (i in streams.indices) {
                     try {
-                        if (savedVolumes[i] > 0) {
-                            audioManager.setStreamVolume(streams[i], savedVolumes[i], 0)
-                        }
+                        // Always re-write — even if savedVolumes[i] equalled
+                        // the mute target we want to bump back to that exact
+                        // value to clear any internal "muted" flag the
+                        // service may have set.
+                        audioManager.setStreamVolume(streams[i], savedVolumes[i], 0)
                     } catch (t: Throwable) {
                         XrLog.v(TAG, "couldn't restore stream=${streams[i]}: ${t.message}")
                     }
@@ -631,12 +688,28 @@ class LocalCommandRecognizer(
 
         // How long to keep the system streams muted after invoking
         // startListening, before restoring their original volumes.
-        // The Google recognition-service earcon is a single ~150-200 ms
-        // tone, so 250 ms is just enough to swallow it without clipping
-        // a meaningful chunk of TTS audio if Gemini happens to start
-        // speaking in the same window (in practice that almost never
-        // overlaps because Gemini-Live owns the mic exclusively while
-        // it's responding, and we pause this recognizer during that).
-        private const val EARCON_MUTE_RESTORE_DELAY_MS = 250L
+        // Bumped from 250 ms to 600 ms because Galaxy XR's recognizer
+        // earcon has a noticeable startup latency — the SoundPool tone
+        // sometimes plays 300-400 ms after we call startListening, well
+        // outside the original 250 ms window. 600 ms catches the late
+        // tone reliably while still being short enough that Gemini TTS
+        // (which we pause this recognizer for anyway) can't get clipped.
+        private const val EARCON_MUTE_RESTORE_DELAY_MS = 600L
+
+        // Master kill switch for the always-on local-command
+        // recognizer loop. When false, [start] becomes a no-op (and
+        // immediately settles into IDLE) so the system recognizer
+        // earcon — which fires on every listening-round re-arm and
+        // produces an audible beep every ~5 s — never plays. Flip
+        // back to true once the earcon mute path is bulletproof on
+        // every target device.
+        private const val ALWAYS_ON_LOCAL_VOICE_ENABLED = false
+
+        // STREAM_ASSISTANT (`AudioSystem.STREAM_ASSISTANT`) is a hidden
+        // stream constant exposed in the platform but not always present
+        // on `AudioManager` as a public field. We use the integer
+        // directly because referencing the field by name would fail to
+        // compile on SDK levels where it's @hide.
+        private const val STREAM_ASSISTANT = 11
     }
 }

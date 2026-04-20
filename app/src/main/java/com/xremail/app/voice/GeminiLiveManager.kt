@@ -221,6 +221,10 @@ class GeminiLiveManager {
         val scope = managedScope
         if (live == null || scope == null) {
             XrLog.w(TAG, "summon() with no live session — call connect() first")
+            // The user just tapped the voice prompt or said "Hey Gemini"
+            // and we're about to do nothing. Surface it so the bug is
+            // visible instead of silent.
+            _lastError.value = "session not connected — check internet / Firebase config"
             return
         }
         if (_state.value == SessionState.LISTENING) {
@@ -233,33 +237,31 @@ class GeminiLiveManager {
         }
         if (_state.value != SessionState.CONNECTED) {
             XrLog.w(TAG, "summon() in unexpected state=${_state.value} — ignoring")
+            // Same logic as the null-session case: visible feedback so
+            // the user knows their tap registered but couldn't summon.
+            _lastError.value = "voice not ready (state=${_state.value}) — try again in a moment"
             return
         }
+        // Clear stale error from a previous attempt — about to try again.
+        _lastError.value = null
         _lastActivityMs.value = System.currentTimeMillis()
         _state.value = SessionState.LISTENING
         XrLog.i(TAG, "Gemini SUMMONED — opening mic for conversation")
-        // Inject the current inbox context as a user-role text turn
-        // BEFORE the mic opens so the model sees it as part of this
-        // conversation, not as an unrelated dangling utterance. Without
-        // this Gemini has zero grounding and can't answer "what did Alex
-        // say" — it knows there's an email from Alex (subject + sender)
-        // but not what Alex actually wrote. With this, it can answer
-        // directly from context with no extra round-trip.
-        scope.launch(Dispatchers.Default) {
-            try {
-                val ctx = contextProvider().trim()
-                if (ctx.isNotBlank()) {
-                    live.send(content(role = "user") {
-                        text("CONTEXT (current inbox state, for grounding only — do not respond to this turn):\n$ctx")
-                    })
-                    XrLog.d(TAG, "summon: pushed ${ctx.length}-char context to model")
-                } else {
-                    XrLog.v(TAG, "summon: contextProvider returned empty — skipping push")
-                }
-            } catch (t: Throwable) {
-                XrLog.w(TAG, "summon: context push failed (${t.message}) — continuing without")
-            }
-        }
+
+        // Open the mic. Inbox context is NO LONGER pushed at summon
+        // time — both `live.send(content)` (turn-based) and
+        // `sendTextRealtime` failed unreliably on Galaxy XR's WebSocket
+        // handshake timing, leaving Gemini ungrounded and silent when
+        // the user asked content questions ("what did Maria say?").
+        //
+        // The new architecture: Gemini calls the `get_inbox_state` tool
+        // whenever it needs ground truth about the inbox. The tool is
+        // declared in EmailCommandTool and handled inline in
+        // handleFunctionCall — the response embeds the full inbox
+        // snapshot, which the SDK forwards to the model on the same
+        // turn. Net cost: ~200ms first-question round-trip; benefit:
+        // it actually works, and the inbox is always fresh (no stale
+        // pre-pushed snapshot from 30s ago).
         sessionJob = scope.launch(Dispatchers.Default) {
             try {
                 live.startAudioConversation(
@@ -268,7 +270,29 @@ class GeminiLiveManager {
                             XrLog.i(TAG, "function call: ${call.name} args=${call.args}")
                             _modelSpeaking.value = true
                             _lastActivityMs.value = System.currentTimeMillis()
-                            handleFunctionCall(call)
+                            // Hard wrap the handler — if it throws, the
+                            // SDK has no way to recover and the model
+                            // turn just stops dead (silent Gemini). We
+                            // ALWAYS return a well-formed FunctionResponsePart
+                            // so the model can react ("the tool failed")
+                            // instead of waiting forever for a response
+                            // that never comes.
+                            try {
+                                handleFunctionCall(call)
+                            } catch (t: Throwable) {
+                                XrLog.e(TAG, "function call handler crashed for ${call.name}", t)
+                                _lastError.value = "tool ${call.name} failed: ${t.message ?: t::class.simpleName}"
+                                FunctionResponsePart(
+                                    name = call.name,
+                                    response = buildJsonObject {
+                                        put("status", JsonPrimitive("error"))
+                                        put(
+                                            "error",
+                                            JsonPrimitive(t.message ?: t::class.simpleName ?: "unknown"),
+                                        )
+                                    },
+                                )
+                            }
                         }
                         enableInterruptions = true
                         initializationHandler = { recordBuilder, trackBuilder ->
@@ -355,22 +379,34 @@ class GeminiLiveManager {
     }
 
     /**
-     * Inject a short transcript describing what the user is looking at.
+     * Inject a short transcript describing what the user is looking at,
+     * or forward a transcribed wake-word remainder, into the live session
+     * WITHOUT taking a user turn. This used to call `live.send(content)`
+     * which is a turn-ending message — that made the model think the user
+     * had already spoken and silently waited for "the next turn" while the
+     * user's actual audio was being treated as a continuation. Switched to
+     * [LiveSession.sendTextRealtime] which routes through the realtime
+     * input channel: the model receives the text as part of the same turn
+     * as any concurrent audio, so the audio it captures next gets a real
+     * response instead of being absorbed into a phantom turn.
      *
-     * IMPORTANT: prefer the [setContextProvider] callback path over calling
-     * this directly. Every send() here counts as a user-role turn and may
-     * provoke the model to respond, which causes spurious "Got it." audio
-     * and adds latency to the next real user turn. This entry point is kept
-     * for cases where we deliberately want to nudge the model (e.g. major
-     * tier transitions where the available actions change), not for every
-     * selection change.
+     * IMPORTANT: this is now safe to call freely (no spurious "Got it."
+     * audio, no extra latency). Prefer the [setContextProvider] callback
+     * for the per-summon inbox snapshot — call this for one-off injections
+     * (e.g. forwarding the wake-word remainder).
      */
     suspend fun sendContextUpdate(text: String) {
-        val live = session ?: return
+        val live = session
+        if (live == null) {
+            XrLog.w(TAG, "sendContextUpdate: no session — '$text' dropped")
+            _lastError.value = "voice not connected — context update dropped"
+            return
+        }
         try {
-            live.send(content(role = "user") { text(text) })
+            live.sendTextRealtime(text)
         } catch (t: Throwable) {
-            XrLog.w(TAG, "sendContextUpdate failed: ${t.message}")
+            XrLog.w(TAG, "sendContextUpdate failed: ${t.message}", t)
+            _lastError.value = "context update failed: ${t.message ?: t::class.simpleName}"
         }
     }
 
@@ -457,6 +493,32 @@ class GeminiLiveManager {
             (v as? JsonPrimitive)?.content
         }
         val command = EmailCommandTool.parse(call.name, args)
+
+        // Special-case: get_inbox_state is the model's hook for "I need
+        // to know what's in the inbox to answer the user's question."
+        // Instead of just emitting an opaque ok, we synchronously fetch
+        // the latest inbox snapshot and embed it in the function response,
+        // which the SDK forwards to the model on the same turn. Net
+        // effect: the user asks "what did Maria say?", model calls
+        // get_inbox_state, gets back the inbox text, and answers
+        // immediately — all within ~250ms of round-trip latency.
+        if (command == EmailCommandTool.Command.GetInboxState) {
+            val snapshot = try {
+                contextProvider().trim().ifBlank { "(inbox is empty)" }
+            } catch (t: Throwable) {
+                XrLog.w(TAG, "get_inbox_state: contextProvider threw ${t.message}")
+                "(inbox unavailable)"
+            }
+            XrLog.i(TAG, "get_inbox_state -> returning ${snapshot.length} chars to Gemini")
+            return FunctionResponsePart(
+                name = call.name,
+                response = buildJsonObject {
+                    put("status", JsonPrimitive("ok"))
+                    put("inbox", JsonPrimitive(snapshot))
+                },
+            )
+        }
+
         return if (command != null) {
             _commands.tryEmit(command)
             FunctionResponsePart(
@@ -511,15 +573,23 @@ class GeminiLiveManager {
         // Every additional token here adds prefill latency to the first
         // audio chunk on each turn, so we keep the prose dense.
         private val SYSTEM_PROMPT = """
-            You are XrMail's hands-free voice agent. Three modes:
+            You are XrMail's hands-free voice agent. You ALWAYS respond — never sit silent. Three modes:
 
-            ANSWER MODE (when the user asks a question about their email — "what did Alex say", "what's the gist", "anything urgent", "summarize this", "who's that from", etc.): answer DIRECTLY in 1-3 short spoken sentences, using the CONTEXT block injected at the top of each turn. Quote the sender by name and paraphrase what they wrote. Do NOT call a tool unless the user asks for an action. If the answer isn't in the context, say so in one sentence — don't make things up.
+            ANSWER MODE (the user asks ANY question about their email — "what did Alex say", "what's the gist", "anything urgent", "who emailed me", "summarize this", "what's in the inbox", etc.):
+              1. FIRST call get_inbox_state to fetch the current inbox snapshot. Do this EVERY time, even if you think you remember — the inbox changes constantly.
+              2. Read the returned `inbox` field from the function response.
+              3. Answer DIRECTLY in 1-3 short spoken sentences. Quote the sender by name, paraphrase what they wrote. If the answer truly isn't in the snapshot, say so in one sentence — never invent senders or content.
 
-            ACTION MODE (when the user's intent maps to a tool — archive, snooze, next, refresh, expand, collapse, etc.): call the tool immediately, never narrate. Then speak ONE confirmation, max 6 words ("Archived." "Snoozed till tomorrow." "Opening inbox.").
+            ACTION MODE (the user's intent maps to a UI action — archive, snooze, next, refresh, expand, collapse, open an email, etc.): call the tool immediately, never narrate. Then speak ONE confirmation, max 6 words ("Archived." "Snoozed till tomorrow." "Opening inbox.").
 
-            COMPOSE MODE (when the user asks to reply, write back, draft, respond, or send a message): write the FULL reply yourself in 1-4 short sentences, natural and ready-to-send. Pass the complete text in draft_reply(body=...). Then say ONE short confirmation like "Drafted, want me to send it?" — DO NOT speak the draft body, the UI reads it back. If the user revises, call revise_draft(body=...) with the COMPLETE rewritten body. Only call send_draft after the user explicitly confirms ("send it", "yes", "fire it").
+            COMPOSE MODE (the user asks to reply, write back, draft, respond, or send a message):
+              1. Call get_inbox_state if you need to know what email to reply to or what was said.
+              2. Write the FULL reply yourself in 1-4 short sentences, natural and ready-to-send.
+              3. Pass the complete text in draft_reply(body=...). Then say ONE short confirmation like "Drafted, want me to send it?" — DO NOT speak the draft body, the UI reads it back.
+              4. If the user revises, call revise_draft(body=...) with the COMPLETE rewritten body.
+              5. Only call send_draft after the user explicitly confirms ("send it", "yes", "fire it").
 
-            Always default to the selected email when one exists. Reference emails by sender or subject, never id. If you genuinely don't know what to do, ask ONE tight clarifying question — never guess wrong.
+            Always default to the selected email when one exists. Reference emails by sender or subject, never id. If a request is genuinely ambiguous, ask ONE tight clarifying question instead of guessing — but ALWAYS say something out loud, every turn.
         """.trimIndent()
     }
 }

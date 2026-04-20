@@ -90,10 +90,18 @@ class EmailViewModel(
                     }
                 },
                 onFailure = { error ->
+                    val msg = error.message ?: "Failed to load emails"
+                    XrLog.e("EmailVM", "loadEmails FAILED", error)
                     _uiState.update {
                         it.copy(
                             isLoading = false,
-                            errorMessage = error.message ?: "Failed to load emails",
+                            errorMessage = msg,
+                            // errorMessage is not rendered anywhere — wire
+                            // the same text into the toast channel so the
+                            // user actually sees that the inbox load failed
+                            // (otherwise the UI sits on stale or empty data
+                            // with no explanation).
+                            toastMessage = ToastMessage("Inbox: $msg"),
                         )
                     }
                 }
@@ -430,21 +438,120 @@ class EmailViewModel(
         }
     }
 
+    /**
+     * Actually send the in-progress voice draft via the email repository.
+     *
+     * BIG BUG-FIX: this used to ONLY update local state and pop a "Sent
+     * to X" toast. The email never left the device — `repository.sendEmail`
+     * was never called. The user reported it as "I can't send emails
+     * either" because the success toast was lying. We now construct an
+     * `EmailDraft` from the selected message + voice draft and POST it
+     * through the repository, only flipping the UI to "Sent" on a
+     * genuine network success. On failure we keep the draft visible
+     * with an error toast so the user can retry instead of believing
+     * the message was sent when it wasn't.
+     */
     fun confirmSend() {
+        val state = _uiState.value
+        val selected = state.selectedEmail
+        val draft = state.voiceDraft
+
+        if (selected == null || draft == null || draft.draftText.isBlank()) {
+            XrLog.w("EmailVM", "confirmSend: missing selected or draft (selected=$selected, draft=$draft)")
+            _uiState.update {
+                it.copy(
+                    toastMessage = ToastMessage("Nothing to send."),
+                )
+            }
+            return
+        }
+
+        // Optimistically clear the compose UI before the network round-trip
+        // — the user already heard "Drafted, want me to send it?" and said
+        // yes, so leaving the draft visible while we wait for HTTP feels
+        // unresponsive. We restore the draft below if the send fails.
         _uiState.update {
             it.copy(
                 mode = AppMode.READING,
                 isVoiceComposing = false,
                 voiceDraft = null,
                 toastMessage = ToastMessage(
-                    "Sent to ${it.selectedEmail?.sender ?: "recipient"}"
+                    "Sending to ${selected.sender}…",
                 ),
+            )
+        }
+
+        viewModelScope.launch {
+            val emailDraft = EmailDraft(
+                to = listOf(selected.senderEmail),
+                subject = if (draft.subject.isNotBlank()) draft.subject
+                          else "Re: ${selected.subject}",
+                body = draft.draftText,
+                inReplyTo = selected.id,
+            )
+            XrLog.i(
+                "EmailVM",
+                "sendEmail -> to=${emailDraft.to} subject=\"${emailDraft.subject}\" " +
+                    "bodyLen=${emailDraft.body.length}",
+            )
+            repository.sendEmail(emailDraft).fold(
+                onSuccess = {
+                    XrLog.i("EmailVM", "sendEmail SUCCESS")
+                    _uiState.update {
+                        it.copy(
+                            toastMessage = ToastMessage(
+                                "Sent to ${selected.sender}",
+                            ),
+                        )
+                    }
+                },
+                onFailure = { err ->
+                    XrLog.e("EmailVM", "sendEmail FAILED", err)
+                    // Restore the draft so the user can retry — no
+                    // silent loss of the body they just dictated.
+                    _uiState.update {
+                        it.copy(
+                            mode = AppMode.COMPOSING,
+                            isVoiceComposing = true,
+                            voiceDraft = draft,
+                            toastMessage = ToastMessage(
+                                "Send failed: ${err.message ?: "network error"} — try again",
+                            ),
+                        )
+                    }
+                },
             )
         }
     }
 
     fun dismissToast() {
         _uiState.update { it.copy(toastMessage = null) }
+    }
+
+    /**
+     * Surface a failure to the user as a toast — the central "nothing
+     * fails silently" channel. Anything that throws / fails / no-ops
+     * unexpectedly should land here so the user sees concrete feedback
+     * instead of pressing buttons that quietly do nothing.
+     *
+     * Call this from MainActivity when observing GeminiLive.lastError,
+     * LocalCommandRecognizer.lastError, repository failures the
+     * ViewModel doesn't already toast itself, etc. Always also writes
+     * an XrLog at WARN level so the same failure shows up in adb logcat.
+     *
+     * [source] is a short subsystem tag like "Gemini" / "Voice" / "Send"
+     * that gets prefixed onto the toast so the user can tell where the
+     * problem is coming from at a glance.
+     */
+    fun showError(source: String, message: String, throwable: Throwable? = null) {
+        if (throwable != null) {
+            XrLog.w("EmailVM", "showError [$source]: $message", throwable)
+        } else {
+            XrLog.w("EmailVM", "showError [$source]: $message")
+        }
+        _uiState.update {
+            it.copy(toastMessage = ToastMessage("$source: $message"))
+        }
     }
 
     // ---------------------------------------------------------------------------
@@ -491,7 +598,20 @@ class EmailViewModel(
         val selected = _uiState.value.selectedEmail ?: return
         archiveEmail(selected)
         viewModelScope.launch {
-            repository.archive(selected.id)
+            // Repository.archive returns Result — fold so a network
+            // failure becomes a visible toast instead of an apparently-
+            // successful local archive that silently re-appears on next
+            // refresh.
+            repository.archive(selected.id).fold(
+                onSuccess = { XrLog.i("EmailVM", "archive ok: ${selected.id}") },
+                onFailure = { err ->
+                    showError(
+                        "Archive",
+                        "couldn't archive ${selected.sender}: ${err.message ?: "network error"}",
+                        err,
+                    )
+                },
+            )
         }
     }
 
@@ -533,7 +653,12 @@ class EmailViewModel(
                     }
                 )
             }
-            repository.setStarred(messageId, starred)
+            repository.setStarred(messageId, starred).fold(
+                onSuccess = { XrLog.v("EmailVM", "setStarred ok: $messageId=$starred") },
+                onFailure = { err ->
+                    showError("Star", "couldn't update star: ${err.message ?: "network error"}", err)
+                },
+            )
         }
     }
 
@@ -558,8 +683,16 @@ class EmailViewModel(
                     }
                 },
                 onFailure = { error ->
+                    val msg = error.message ?: "Could not compose email"
+                    XrLog.e("EmailVM", "composeFromVoice FAILED", error)
                     _uiState.update {
-                        it.copy(errorMessage = error.message ?: "Could not compose email")
+                        it.copy(
+                            errorMessage = msg,
+                            // Surface to the user — composing silently
+                            // failing is the worst UX (they think the
+                            // mic didn't pick them up and re-dictate).
+                            toastMessage = ToastMessage("Compose: $msg"),
+                        )
                     }
                 }
             )

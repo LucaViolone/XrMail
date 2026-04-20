@@ -93,10 +93,16 @@ fun VoicePrompt(
     // the manual escape hatch when the local wake-word recognizer is
     // broken (Galaxy XR's on-device service silently fails — the
     // VoicePrompt becomes the user's only way in).
+    // Tap-to-summon is available whenever the live session is reachable
+    // and we're not already streaming — including the IDLE case where
+    // ALWAYS_ON_LOCAL_VOICE_ENABLED is off (no wake-word, tap is the
+    // ONLY way in). Without IDLE in this list the user is stuck staring
+    // at "Voice off" with no way to talk to Gemini.
     val canSummon = onSummonGemini != null && (
         voiceState == GeminiLiveManager.SessionState.CONNECTED ||
+            voiceState == GeminiLiveManager.SessionState.ERROR ||
             localState == LocalCommandRecognizer.State.ERROR ||
-            voiceState == GeminiLiveManager.SessionState.ERROR
+            localState == LocalCommandRecognizer.State.IDLE
     )
 
     val rowModifier = modifier
@@ -181,10 +187,14 @@ private fun computeVisual(
         muted = false,
     )
 
-    // Local recognizer dead but Gemini Live is up: show "Tap to talk"
-    // so the user has a clear manual path even when wake-word is broken.
-    local == LocalCommandRecognizer.State.ERROR &&
-        voice == GeminiLiveManager.SessionState.CONNECTED -> VoiceVisual(
+    // Local recognizer dead OR intentionally disabled (ALWAYS_ON_LOCAL_VOICE_ENABLED=false)
+    // but Gemini Live is up: show "Tap to talk" so the user has a clear
+    // manual path. We pulse it so it's actually noticeable in the
+    // peripheral HUD — without the pulse the user assumes voice is off.
+    voice == GeminiLiveManager.SessionState.CONNECTED && (
+        local == LocalCommandRecognizer.State.ERROR ||
+            local == LocalCommandRecognizer.State.IDLE
+    ) -> VoiceVisual(
         label = "Tap to talk",
         iconColor = XREmailColors.aiAccent,
         textColor = XREmailColors.onSurface,

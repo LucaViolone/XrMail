@@ -49,6 +49,7 @@ import com.xremail.app.tracking.SecondaryHandGestures
 import com.xremail.app.ui.notifications.NotificationCardStack
 import com.xremail.app.ui.peripheral.AmbientHud
 import com.xremail.app.ui.peripheral.CollapseAffordance
+import com.xremail.app.ui.peripheral.ToastOverlay
 import com.xremail.app.ui.peripheral.InboxPanel
 import com.xremail.app.ui.peripheral.VoiceComposeOverlay
 import com.xremail.app.ui.peripheral.VoicePrompt
@@ -294,10 +295,15 @@ fun InteractionTierRouter(
             // inter-row spacing, no footer hints row).
             val visibleNotifCards = uiState.unreadCount.coerceAtMost(5)
             val panelHeight = when (uiState.tier) {
-                // Just a small ambient banner + voice prompt + hint.
-                // 240 had ~70dp of dead space below the banner; 200 is
-                // tight to the actual content.
-                InteractionTier.AMBIENT_HUD -> 200.dp
+                // AMBIENT_HUD now contains: voice prompt row (~28dp) +
+                // optional voice mic indicator (collapsed when idle) +
+                // notification banner (~52dp content) + outer 8dp×2
+                // padding. Removed the "Pinch + hold to expand" footer
+                // text (~24dp) and the AmbientHud's nested Surface
+                // (~32dp of inner padding) on 2026-04-19 per user
+                // feedback that the ambient panel had "a ton of extra
+                // space around the notification".
+                InteractionTier.AMBIENT_HUD -> 110.dp
                 InteractionTier.NOTIFICATION_CARDS -> {
                     if (visibleNotifCards == 0) {
                         // Just the inbox-zero pill + collapse affordance
@@ -475,9 +481,15 @@ private fun PeripheralTierContent(
     onDismissToast: () -> Unit,
     onSummonGemini: () -> Unit = {},
 ) {
+    // AMBIENT_HUD wants tight padding (the whole point of the tier is
+    // to be the smallest possible peripheral footprint); deeper tiers
+    // can use more breathing room. Branch on tier here so we don't pay
+    // a 24dp tax on the smallest panel just because INBOX needs it.
+    val outerPadding = if (tier == InteractionTier.AMBIENT_HUD) 8.dp else 12.dp
+    val outerSpacing = if (tier == InteractionTier.AMBIENT_HUD) 6.dp else 10.dp
     Column(
-        modifier = Modifier.fillMaxSize().padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+        modifier = Modifier.fillMaxSize().padding(outerPadding),
+        verticalArrangement = Arrangement.spacedBy(outerSpacing),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -531,12 +543,14 @@ private fun PeripheralTierContent(
                     },
                     onDismissToast = onDismissToast,
                 )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    text = "Pinch + hold to expand",
-                    color = XREmailColors.onSurfaceDim,
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                // "Pinch + hold to expand" hint REMOVED 2026-04-19. The
+                // user described it as adding "a ton of extra space" to
+                // the AMBIENT_HUD — and they're right: it cost ~24dp of
+                // vertical chrome on a panel whose entire purpose is to
+                // be the smallest possible peripheral footprint. Users
+                // who need the gesture hint will discover it via the
+                // CollapseAffordance ring on the next tier (which uses
+                // the same gesture in reverse) or by trying it.
             }
 
             InteractionTier.NOTIFICATION_CARDS -> {
@@ -588,6 +602,19 @@ private fun PeripheralTierContent(
             VoiceComposeOverlay(
                 draft = voiceDraft ?: uiState.voiceDraft,
                 composeState = voiceComposeState,
+            )
+        }
+
+        // Global toast — visible across NOTIFICATION_CARDS / INBOX / FOCUS
+        // too, not just AMBIENT_HUD. Without this an error fired while the
+        // user was inside an expanded tier would silently disappear.
+        // AmbientHud also renders ToastOverlay, so when tier == AMBIENT_HUD
+        // the message appears once (in-flow inside AmbientHud) — we skip
+        // the global render in that case to avoid a double toast.
+        if (tier != InteractionTier.AMBIENT_HUD) {
+            ToastOverlay(
+                message = uiState.toastMessage,
+                onDismiss = onDismissToast,
             )
         }
     }

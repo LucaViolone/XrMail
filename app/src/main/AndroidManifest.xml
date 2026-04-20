@@ -5,6 +5,13 @@
     <uses-permission android:name="android.permission.FACE_TRACKING" />
     <uses-permission android:name="android.permission.EYE_TRACKING_COARSE" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!--
+      MODIFY_AUDIO_SETTINGS is required for `AudioManager.setStreamVolume()`
+      to take effect. Without it, the call silently no-ops and the recognizer
+      earcon ding (every ~5 s on each speech-recognition re-arm) keeps
+      playing. See LocalCommandRecognizer.muteRecognizerEarconAroundStart().
+    -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.INTERNET" />
     <!--
       We intentionally do NOT request `android.permission.SCENE_UNDERSTANDING`

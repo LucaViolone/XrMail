@@ -59,21 +59,28 @@ private const val DEDUP_WINDOW_MS = 250L
 // tracking blip would otherwise let the timer restart and re-fire.
 private const val CLOSED_FIST_DEDUP_WINDOW_MS = 1_500L
 
-// Closed-fist collapse — maximum distance from each fingertip to the palm
-// joint that we consider "folded". A relaxed hand at the user's side
-// curls ~3-4cm; a deliberate fist tucks all four non-thumb fingertips
-// in tight, ~1.5-2.5cm from the palm joint. We require <= 2.5cm so a
-// resting hand (which often hovers right around 3cm) doesn't false-fire
-// — the user has to actually clench. Combined with the thumb-folded
-// requirement below, this is essentially impossible to satisfy except
-// with intentional fist clenching.
-private const val CLOSED_FIST_FINGER_FOLD_MAX_M = 0.025f
+// Closed-fist collapse — maximum distance from each fingertip to the
+// palm CENTER joint (HAND_JOINT_TYPE_PALM). LOOSENED from the original
+// 2.5cm: that threshold was effectively unsatisfiable on real hands
+// because the palm joint on Galaxy XR is the geometric center of the
+// metacarpal plate, not the surface of the palm. Even with a hard,
+// deliberate fist the fingertips wrap to the FRONT of the palm and end
+// up 3-5cm from the palm-center joint — measured directly on the
+// device. The original 2.5cm meant the gesture detected approximately
+// never, which is why "closed-fist hold doesn't collapse anything"
+// was the user-reported behaviour. 4.5cm catches any genuinely-curled
+// hand while staying tighter than a relaxed claw (relaxed-claw
+// fingertips sit 7-8cm from palm center).
+private const val CLOSED_FIST_FINGER_FOLD_MAX_M = 0.045f
 // In a real fist the thumb wraps OVER the curled fingers, so the
-// thumb-tip ends up close to the palm too (~3-4cm). A relaxed hand has
-// the thumb extended off to the side at 5-7cm. We require the thumb to
-// also be tucked so an open hand resting at the side (loose fingers but
-// thumb still extended) can't ever satisfy the gesture.
-private const val CLOSED_FIST_THUMB_FOLD_MAX_M = 0.045f
+// thumb-tip ends up close to the palm too (~3-4cm from the palm
+// SURFACE, ~5-6cm from the palm-center joint). A relaxed open hand
+// has the thumb sticking 8-10cm out from palm center. Bumped from
+// 4.5cm to 6.5cm for the same palm-center-vs-surface reason as the
+// finger threshold above — a thumb-tucked fist wraps around the front
+// so the thumb tip is closer to the front of the palm than to the
+// geometric center the joint reports.
+private const val CLOSED_FIST_THUMB_FOLD_MAX_M = 0.065f
 // Hold duration. Same target as the old open-palm-hold (600ms) — fast
 // enough to feel snappy, slow enough that incidental momentary fist-like
 // poses (gripping a coffee, holding a phone) don't sustain past it.
@@ -82,7 +89,10 @@ private const val CLOSED_FIST_HOLD_DURATION_MS = 600L
 // hand again — without this, holding a fist for 2s fires once then
 // re-fires every dedup window as the timer keeps ticking. Lock releases
 // the moment ANY non-thumb fingertip extends past this threshold.
-private const val CLOSED_FIST_RELEASE_FINGER_EXTEND_M = 0.06f
+// Bumped from 6cm to 8cm to match the loosened FOLD_MAX (the release
+// has to sit comfortably above the fold-detection threshold or
+// borderline finger positions oscillate the lockout flag every frame).
+private const val CLOSED_FIST_RELEASE_FINGER_EXTEND_M = 0.08f
 // Tracking-loss blips of <= this duration are treated as a continuation
 // of the previous gesture (we don't reset closedFistEmitted on loss). On
 // Galaxy XR a held gesture in front of the face often causes 1-3 frame
@@ -390,6 +400,35 @@ class SecondaryHandGestures {
         val thumbTucked = thumbTipDistFromPalm < CLOSED_FIST_THUMB_FOLD_MAX_M
         val fistNow = allFingersFolded && thumbTucked
 
+        // DIAGNOSTIC: when the hand is close to fist-shape but doesn't
+        // quite satisfy both gates, log the joint distances every ~500ms
+        // so we can SEE on the wire how close the user's gesture is to
+        // crossing. Without this, "closed-fist hold doesn't collapse"
+        // is impossible to debug because there's zero signal — the
+        // detector silently doesn't fire. Throttled to once per ~500ms
+        // per hand to stay out of the way of normal logs.
+        val maxFingerDist = maxOf(
+            indexTipDistFromPalm,
+            middleTipDistFromPalm,
+            ringTipDistFromPalm,
+            littleTipDistFromPalm,
+        )
+        val nearFist = maxFingerDist < CLOSED_FIST_FINGER_FOLD_MAX_M * 1.5f &&
+            thumbTipDistFromPalm < CLOSED_FIST_THUMB_FOLD_MAX_M * 1.5f
+        if (!fistNow && nearFist && now - s.lastFistDiagLogMs > 500L) {
+            s.lastFistDiagLogMs = now
+            XrLog.v(
+                TAG,
+                "${s.label} near-fist (NOT firing) " +
+                    "fingers=${"%.3f".format(maxFingerDist)}m " +
+                    "(need <${CLOSED_FIST_FINGER_FOLD_MAX_M}m, " +
+                    "fingersOk=$allFingersFolded) " +
+                    "thumb=${"%.3f".format(thumbTipDistFromPalm)}m " +
+                    "(need <${CLOSED_FIST_THUMB_FOLD_MAX_M}m, " +
+                    "thumbOk=$thumbTucked)",
+            )
+        }
+
         // Release the lockout the moment the hand opens (any non-thumb
         // finger extends past the release threshold). Required so a
         // second deliberate fist is allowed to fire after the first has
@@ -525,6 +564,9 @@ class SecondaryHandGestures {
         var wasClosedFist = false
         var closedFistStartTimeMs = 0L
         var closedFistEmitted = false
+        // Throttle for the "near-fist (NOT firing)" diagnostic — see
+        // detectClosedFistHold. Plain wall-clock ms; 0 means never logged.
+        var lastFistDiagLogMs = 0L
         val palmPositionHistory = mutableListOf<Pair<Long, Vector3>>()
 
         fun reset() {
@@ -534,6 +576,7 @@ class SecondaryHandGestures {
             wasClosedFist = false
             closedFistStartTimeMs = 0L
             closedFistEmitted = false
+            lastFistDiagLogMs = 0L
             palmPositionHistory.clear()
         }
     }
