@@ -69,14 +69,26 @@ fun NotificationCard(
         label = "cardHighlight",
     )
 
+    // SWIPE-TO-DISMISS IS DISABLED ON XR.
+    //
+    // On a touchscreen this is a great gesture — the user physically drags
+    // the card off screen to archive/snooze. On Galaxy XR the equivalent is
+    // OS gaze+pinch mapped to a virtual finger press, and a user who pinches
+    // on a card and drifts their hand even a couple centimeters horizontally
+    // (which is basically everyone) fires either StartToEnd or EndToStart
+    // and unintentionally archives/snoozes the email. The user directly
+    // reported this as "things are getting randomly archived and snoozed
+    // and changed without intended actions" — this is a primary cause.
+    //
+    // We keep the SwipeToDismissBox in the tree because its backgroundContent
+    // still provides the subtle archive/snooze hint when the user drags a
+    // bit (good affordance), but confirmValueChange is hard-wired to false
+    // so the card always springs back to Settled regardless of direction.
+    // Archive/snooze is reachable via voice ("archive this", "snooze this")
+    // and via the inbox panel's explicit buttons — redundant channels that
+    // can't fire without deliberate intent.
     val dismissState = rememberSwipeToDismissBoxState(
-        confirmValueChange = { value ->
-            when (value) {
-                SwipeToDismissBoxValue.StartToEnd -> { onArchive(); true }
-                SwipeToDismissBoxValue.EndToStart -> { onSnooze(); true }
-                SwipeToDismissBoxValue.Settled -> false
-            }
-        }
+        confirmValueChange = { _ -> false },
     )
 
     // CRITICAL: the clickable WRAPS the SwipeToDismissBox here (not the

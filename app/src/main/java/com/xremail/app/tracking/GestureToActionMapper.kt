@@ -158,37 +158,39 @@ class GestureToActionMapper(
                 Log.d(TAG, "  -> expandToInbox() (PINCH_HOLD_EXPAND)")
                 viewModel.expandToInbox()
             }
+            // AIR-SWIPE ARCHIVE/SNOOZE/STAR DISABLED.
+            //
+            // Hand-tracking can't reliably distinguish "user swung their
+            // hand through the air as a gesture" from "user was just
+            // walking / gesturing while talking / shifting posture".
+            // The thresholds in SecondaryHandGestures were tightened
+            // considerably, but for DESTRUCTIVE actions (archive, snooze,
+            // star) no threshold is safe enough — one false positive means
+            // an email silently disappeared. The user directly reported
+            // this as "things are getting randomly archived and snoozed
+            // without intended actions".
+            //
+            // Archive/snooze/star are reachable via voice ("archive this",
+            // "snooze for an hour", "star this") and via the inbox panel's
+            // explicit buttons. Both are intentional by construction.
             SecondaryHandGestures.Gesture.SWIPE_LEFT_ARCHIVE -> {
-                val highlighted = viewModel.uiState.value.highlightedNotificationId
-                val email = viewModel.uiState.value.emails.find { it.id == highlighted }
-                if (email != null) {
-                    Log.d(TAG, "  -> archiveEmail(${email.id})")
-                    viewModel.archiveEmail(email)
-                }
+                Log.v(TAG, "  SWIPE_LEFT_ARCHIVE in NOTIFICATION_CARDS: ignored (use voice or tap)")
             }
             SecondaryHandGestures.Gesture.SWIPE_RIGHT_SNOOZE -> {
-                val highlighted = viewModel.uiState.value.highlightedNotificationId
-                val email = viewModel.uiState.value.emails.find { it.id == highlighted }
-                if (email != null) {
-                    Log.d(TAG, "  -> snoozeEmail(${email.id})")
-                    viewModel.snoozeEmail(email)
-                }
+                Log.v(TAG, "  SWIPE_RIGHT_SNOOZE in NOTIFICATION_CARDS: ignored (use voice or tap)")
             }
             SecondaryHandGestures.Gesture.SWIPE_DOWN_DISMISS -> {
+                // Tier dismissal is non-destructive (user can always
+                // re-expand) so we KEEP the swipe-down path — but
+                // CLOSED_FIST_HOLD_COLLAPSE is the preferred collapse
+                // gesture. Air-swipe-down is a legacy fallback and
+                // SecondaryHandGestures thresholds are now tight enough
+                // that it takes a deliberate downward flick to fire.
                 Log.d(TAG, "  -> collapseFromNotificationCards()")
                 viewModel.collapseFromNotificationCards()
             }
-            SecondaryHandGestures.Gesture.PINCH_HOLD_EXPAND -> {
-                Log.d(TAG, "  -> expandToInbox()")
-                viewModel.expandToInbox()
-            }
             SecondaryHandGestures.Gesture.SWIPE_UP_STAR -> {
-                val highlighted = viewModel.uiState.value.highlightedNotificationId
-                val email = viewModel.uiState.value.emails.find { it.id == highlighted }
-                if (email != null) {
-                    Log.d(TAG, "  -> toggleStar(${email.id})")
-                    viewModel.toggleStar(email)
-                }
+                Log.v(TAG, "  SWIPE_UP_STAR in NOTIFICATION_CARDS: ignored (use voice or tap)")
             }
             // CLOSED_FIST_HOLD_COLLAPSE handled centrally in [onGesture];
             // this case exists only to keep the when exhaustive.
@@ -198,13 +200,15 @@ class GestureToActionMapper(
 
     private fun handleInboxGesture(gesture: SecondaryHandGestures.Gesture) {
         when (gesture) {
+            // Air-swipe archive/snooze in INBOX is disabled for the same
+            // reason it's disabled in NOTIFICATION_CARDS — one false-
+            // positive swipe silently destroys a message. Voice commands
+            // ("archive this", "snooze") and the inbox buttons remain.
             SecondaryHandGestures.Gesture.SWIPE_LEFT_ARCHIVE -> {
-                Log.d(TAG, "  -> archiveSelected()")
-                viewModel.archiveSelected()
+                Log.v(TAG, "  SWIPE_LEFT_ARCHIVE in INBOX: ignored (use voice or tap)")
             }
             SecondaryHandGestures.Gesture.SWIPE_RIGHT_SNOOZE -> {
-                Log.d(TAG, "  -> snoozeSelected()")
-                viewModel.snoozeSelected()
+                Log.v(TAG, "  SWIPE_RIGHT_SNOOZE in INBOX: ignored (use voice or tap)")
             }
             // Re-selecting the already-selected email did nothing useful and
             // every accidental secondary-hand pinch in this tier was firing
@@ -227,10 +231,7 @@ class GestureToActionMapper(
                 viewModel.collapseToHud()
             }
             SecondaryHandGestures.Gesture.SWIPE_UP_STAR -> {
-                viewModel.uiState.value.selectedEmail?.let {
-                    Log.d(TAG, "  -> toggleStar(${it.id})")
-                    viewModel.toggleStar(it)
-                }
+                Log.v(TAG, "  SWIPE_UP_STAR in INBOX: ignored (use voice or tap)")
             }
             // CLOSED_FIST_HOLD_COLLAPSE handled centrally in [onGesture].
             SecondaryHandGestures.Gesture.CLOSED_FIST_HOLD_COLLAPSE -> Unit

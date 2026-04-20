@@ -46,8 +46,19 @@ private const val PINCH_HOLD_DURATION_MS = 550L
 // Single-frame "ghost pinches" from tracking jitter clear in <50ms; a
 // deliberate tap is at least ~80ms. This filters out the noise.
 private const val PINCH_TAP_MIN_HOLD_MS = 80L
-private const val SWIPE_DISTANCE_THRESHOLD = 0.08f
-private const val SWIPE_VELOCITY_THRESHOLD = 0.15f
+// Air-swipe thresholds. RAISED from (0.08m, 0.15m/s) because the old
+// values detected "swipe" on the natural hand motion of a user walking
+// around — an arm swinging at a casual pace hits 15-30 cm/s with 8+ cm
+// of palm travel every cycle. The user reported this as "things are
+// getting randomly archived and snoozed without intended actions".
+//
+// 25 cm of travel at 60 cm/s means the user has to consciously whip
+// their hand across their body — at rest arm swings hit ~30 cm/s peak
+// and travel 8-12 cm per swing, both well under these thresholds.
+// A deliberate swipe (hand at chest height, flung sideways with intent)
+// easily clears both gates.
+private const val SWIPE_DISTANCE_THRESHOLD = 0.25f
+private const val SWIPE_VELOCITY_THRESHOLD = 0.60f
 private const val DEDUP_WINDOW_MS = 250L
 // Per-gesture dedup overrides for gestures whose natural re-fire interval
 // (hold-duration + finger-recovery) is longer than DEDUP_WINDOW_MS but
@@ -93,6 +104,18 @@ private const val CLOSED_FIST_HOLD_DURATION_MS = 600L
 // has to sit comfortably above the fold-detection threshold or
 // borderline finger positions oscillate the lockout flag every frame).
 private const val CLOSED_FIST_RELEASE_FINGER_EXTEND_M = 0.08f
+
+// Hysteresis: once a closed-fist has STARTED (fingers folded past the
+// trigger threshold), we keep the timer running as long as the hand
+// stays past this LOOSER "maintenance" threshold. Without hysteresis a
+// single frame of tracking jitter where a finger briefly extends past
+// CLOSED_FIST_FINGER_FOLD_MAX_M resets closedFistStartTimeMs, so the
+// 600ms hold never completes — the user reported this as "the gesture
+// is super delayed sometimes". 6cm is comfortably between the trigger
+// (4.5cm) and the release (8cm), so the timer survives noisy frames
+// but still drops if the user genuinely opens their hand.
+private const val CLOSED_FIST_MAINTAIN_FINGER_MAX_M = 0.06f
+private const val CLOSED_FIST_MAINTAIN_THUMB_MAX_M = 0.08f
 // Tracking-loss blips of <= this duration are treated as a continuation
 // of the previous gesture (we don't reset closedFistEmitted on loss). On
 // Galaxy XR a held gesture in front of the face often causes 1-3 frame
@@ -398,7 +421,24 @@ class SecondaryHandGestures {
         // loosely-curled fingers but the thumb is almost always >5cm
         // from the palm, so this gate alone kills most false positives.
         val thumbTucked = thumbTipDistFromPalm < CLOSED_FIST_THUMB_FOLD_MAX_M
-        val fistNow = allFingersFolded && thumbTucked
+        val fistTrigger = allFingersFolded && thumbTucked
+        // Hysteresis: if the user has ALREADY entered the fist pose,
+        // accept a slightly-looser shape while they hold. Tracking
+        // jitter on Galaxy XR routinely kicks one fingertip 0.5-1cm
+        // past the trigger threshold on a held fist; without this, the
+        // timer resets every few frames and the 600ms hold never
+        // completes — directly observed as "gesture is super delayed".
+        val fingersMaintained =
+            indexTipDistFromPalm < CLOSED_FIST_MAINTAIN_FINGER_MAX_M &&
+                middleTipDistFromPalm < CLOSED_FIST_MAINTAIN_FINGER_MAX_M &&
+                ringTipDistFromPalm < CLOSED_FIST_MAINTAIN_FINGER_MAX_M &&
+                littleTipDistFromPalm < CLOSED_FIST_MAINTAIN_FINGER_MAX_M
+        val thumbMaintained = thumbTipDistFromPalm < CLOSED_FIST_MAINTAIN_THUMB_MAX_M
+        val fistMaintain = fingersMaintained && thumbMaintained
+        // fistNow = "hand currently counts as a fist for the purposes of
+        // the timer". If we've already started one, use the maintain
+        // envelope; otherwise require the strict trigger envelope.
+        val fistNow = if (s.wasClosedFist) fistMaintain else fistTrigger
 
         // DIAGNOSTIC: when the hand is close to fist-shape but doesn't
         // quite satisfy both gates, log the joint distances every ~500ms
